@@ -1,23 +1,28 @@
-import { Button, Input, Slider, Spinner } from '@fluentui/react-components';
+import { Button, Dropdown, Input, Option, Slider, Spinner } from '@fluentui/react-components';
 import {
-  ArrowSync24Regular, Color24Regular, Desktop24Regular, Globe24Regular, Person24Regular, PeopleCommunity24Regular,
-  SpeakerMute24Regular, TopSpeed24Regular, Warning24Regular,
+  ArrowSync24Regular, Chat24Regular, Color24Regular, Desktop24Regular, Globe24Regular, Image24Regular, Keyboard24Regular, Person24Regular,
+  PeopleCommunity24Regular, SpeakerMute24Regular, TopSpeed24Regular, Warning24Regular,
 } from '@fluentui/react-icons';
 import { useEffect, useRef, useState } from 'react';
+import { featureOn } from '../../../shared/features';
+import type { Strings } from '../../../shared/i18n';
+import { hotkeyParts, vkLabel } from '../../../shared/keys';
 import type { RoomMember, RoomState } from '../../../shared/room';
-import { TAG_COLORS } from '../../../shared/roomColors';
+import { TAG_COLORS, readableTagRgb, tagColorCss, tagHex, tagRgbFromHex } from '../../../shared/roomColors';
 import { clampNameInput } from '../../../shared/roomProtocol';
-import { LIMITS, type Settings } from '../../../shared/settings';
+import { LIMITS, type RoomTextStyle, type Settings } from '../../../shared/settings';
 import { api } from '../api';
 import { useText } from '../text';
 import type { Update } from '../useAppState';
 import { useRoomState } from '../useRoomState';
+import { KeyCapture } from './KeyCapture';
 import { SettingRow, SwitchRow } from './rows';
 
 const { max: LIMIT_MAX } = LIMITS.incomingPingLimit;
 /** The slider runs 1…max+1; its last stop is Unlimited (stored as 0). */
 const toSlider = (limit: number): number => (limit === 0 ? LIMIT_MAX + 1 : limit);
 const fromSlider = (v: number): number => (v > LIMIT_MAX ? 0 : v);
+const TEXT_STYLES: readonly RoomTextStyle[] = ['spot', 'danmaku'];
 
 function NameRow({ value, onSave }: { value: string; onSave(name: string): void }) {
   const t = useText();
@@ -82,11 +87,14 @@ function MemberRow({ m }: { m: RoomMember }) {
   const t = useText();
   return (
     <div className="member">
-      <span className="tagDot" style={{ background: TAG_COLORS[m.color] }} />
+      <span className="tagDot" style={{ background: tagColorCss(m.color, m.rgb) }} />
       <span className="memberName">
         {m.name}
         {m.self ? <span className="desc inline">({t.roomYou})</span> : null}
         {m.noEmotes ? <span className="desc">{t.memberOldNoEmotes}</span> : null}
+        {m.noChat ? <span className="desc">{t.memberNoChat}</span> : null}
+        {m.textOff ? <span className="desc">{t.memberTextOff}</span> : null}
+        {m.votesOff ? <span className="desc">{t.memberVotesOff}</span> : null}
       </span>
       {m.self ? null : <span className={`badge ${m.path}`}>{t.roomPath[m.path]}</span>}
       {m.status === 'paused' ? <span className="badge">{t.roomPaused}</span> : null}
@@ -162,19 +170,40 @@ function InRoom({ room, allowInternet }: { room: RoomState; allowInternet: boole
   );
 }
 
+const textStyleLabel = (t: Strings, style: RoomTextStyle): string =>
+  style === 'danmaku' ? t.roomTextStyleDanmaku : t.roomTextStyleSpot;
+
 export function RoomSection({ settings: s, update }: { settings: Settings; update: Update }) {
   const t = useText();
   const room = useRoomState();
+  const [textKeyError, setTextKeyError] = useState<string | null>(null);
+  const [panelKeyError, setPanelKeyError] = useState<string | null>(null);
   if (!room) return null;
+  // The picker opens at the custom colour when there is one, else at the palette entry in use.
+  const pickerValue = tagHex(s.tagColorCustom ?? tagRgbFromHex(TAG_COLORS[s.tagColor] ?? TAG_COLORS[0]) ?? [255, 255, 255]);
   return (
     <>
       <NameRow value={s.displayName} onSave={(displayName) => void update({ displayName })} />
-      <SettingRow icon={<Color24Regular />} title={t.roomColor}>
-        <div className="swatches" role="radiogroup" aria-label={t.roomColor}>
-          {TAG_COLORS.map((c, i) => (
-            <button key={c} type="button" role="radio" aria-checked={s.tagColor === i} aria-label={t.roomColorLabel(i + 1)}
-              className={`swatch${s.tagColor === i ? ' sel' : ''}`} style={{ background: c }} onClick={() => void update({ tagColor: i })} />
-          ))}
+      <SettingRow icon={<Color24Regular />} title={t.roomColor} description={t.roomColorCustomHint}>
+        <div className="swatches">
+          <div className="swatchRow" role="radiogroup" aria-label={t.roomColor}>
+            {TAG_COLORS.map((c, i) => {
+              const on = !s.tagColorCustom && s.tagColor === i;
+              return (
+                <button key={c} type="button" role="radio" aria-checked={on} aria-label={t.roomColorLabel(i + 1)}
+                  className={`swatch${on ? ' sel' : ''}`} style={{ background: c }}
+                  onClick={() => void update({ tagColor: i, tagColorCustom: null })} />
+              );
+            })}
+          </div>
+          <label className={`swatch custom${s.tagColorCustom ? ' sel' : ' unset'}`} title={t.roomColorCustom}
+            style={s.tagColorCustom ? { background: tagColorCss(s.tagColor, s.tagColorCustom) } : undefined}>
+            <input type="color" value={pickerValue} aria-label={t.roomColorCustom}
+              onChange={(e) => {
+                const picked = tagRgbFromHex(e.target.value);
+                if (picked) void update({ tagColorCustom: readableTagRgb(picked) });
+              }} />
+          </label>
         </div>
       </SettingRow>
       {room.phase === 'idle' ? <JoinCard /> : <InRoom room={room} allowInternet={s.allowInternet} />}
@@ -185,8 +214,40 @@ export function RoomSection({ settings: s, update }: { settings: Settings; updat
           onChange={(_, d) => void update({ incomingPingLimit: fromSlider(d.value) })} />
         <span className="value">{t.roomLimitValue(s.incomingPingLimit)}</span>
       </SettingRow>
+      <SwitchRow icon={<Image24Regular />} title={t.friendEmotes} description={t.friendEmotesDesc}
+        checked={s.friendEmotes} onChange={(v) => void update({ friendEmotes: v })} />
       <SwitchRow icon={<Globe24Regular />} title={t.roomInternet} description={t.roomInternetDesc}
         checked={s.allowInternet} onChange={(v) => void update({ allowInternet: v })} />
+      {featureOn(s, 'roomText') ? (
+        <>
+          <SettingRow icon={<Chat24Regular />} title={t.roomTextStyle} description={t.roomTextStyleDesc}>
+            <Dropdown style={{ minWidth: 170 }} value={textStyleLabel(t, s.roomTextStyle)} selectedOptions={[s.roomTextStyle]}
+              onOptionSelect={(_, d) => {
+                const style = TEXT_STYLES.find((v) => v === d.optionValue);
+                if (style) void update({ roomTextStyle: style });
+              }}>
+              {TEXT_STYLES.map((v) => <Option key={v} value={v} text={textStyleLabel(t, v)}>{textStyleLabel(t, v)}</Option>)}
+            </Dropdown>
+          </SettingRow>
+          <SettingRow icon={<Keyboard24Regular />} title={t.textShortcut} description={t.textShortcutDesc}>
+            <KeyCapture parts={hotkeyParts(s.textHotkey, api.platform)} requireModifier error={textKeyError}
+              onCapture={async (c) => {
+                const result = await update({ textHotkey: c });
+                setTextKeyError(result.ok ? null : result.error);
+              }} />
+          </SettingRow>
+        </>
+      ) : null}
+      {featureOn(s, 'roomPanel') ? (
+        <SettingRow icon={<Keyboard24Regular />} title={t.panelKey}
+          description={t.panelKeyDesc(vkLabel(s.panelKey, api.platform))}>
+          <KeyCapture parts={[vkLabel(s.panelKey, api.platform)]} requireModifier={false} error={panelKeyError}
+            onCapture={async (c) => {
+              const result = await update({ panelKey: c.vk });
+              setPanelKeyError(result.ok ? null : result.error);
+            }} />
+        </SettingRow>
+      ) : null}
       <SwitchRow icon={<ArrowSync24Regular />} title={t.roomRejoin} checked={s.rejoinRoom} onChange={(v) => void update({ rejoinRoom: v })} />
       <SettingRow icon={<Desktop24Regular />} title={t.roomDisplays} description={t.roomDisplaysDesc}>
         <span className="displays">

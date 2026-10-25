@@ -1,6 +1,6 @@
 # Asset extraction
 
-`assets/sounds`, `assets/textures` and `assets/emotes` were extracted from a local League of Legends install. This tool regenerates them after a League patch changes the pings or emotes.
+`assets/sounds`, `assets/textures`, `assets/emotes` and `assets/ui` were extracted from a local League of Legends install. This tool regenerates them after a League patch changes the pings or emotes.
 
 ## Sounds
 
@@ -21,15 +21,36 @@ Most textures were exported as DDS (DXT5) with Obsidian. To convert a folder of 
 py -3.14 tools/extract-assets/extract_assets.py --dds-dir path/to/dds
 ```
 
-Bait and Vision Cleared are read straight from League's `.tex` files in `Global.wad.client` (see `WAD_TEXTURES` in the script). This needs Pillow installed for Python 3.14:
+Bait, Vision Cleared, On My Way and the normal-colour icons for All In, Assist Me, Need Vision and Enemy Missing are read straight from League's `.tex` files in `Global.wad.client` (see `WAD_TEXTURES` in the script). This needs Pillow installed for Python 3.14:
 
 ```bash
 py -3.14 tools/extract-assets/extract_assets.py --league "C:/Riot Games/League of Legends" --wad-textures
 ```
 
+`enemy_missing_flipped.png` is not a League file: it is `png_enemymissing_128x128.png` turned 180° for the upside-down Enemy Missing ping. `--dds-dir` makes it again; on its own:
+
+```bash
+py -3.14 tools/extract-assets/extract_assets.py --derived
+```
+
+`omw_cyan.png` is made the same way: League's upright On My Way (`omw.png`) is colourblind blue, and its only normal-colour one is the flat ground render `pingwheel_omw.png`. `--derived` measures the hue, saturation and brightness change between `pingwheel_omw_cb.png` and `pingwheel_omw.png` and applies it to `omw.png`. This step also needs NumPy.
+
 No game file says which sound those two pings play: `SRP_11` (Bait) and `SRP_6` (Vision Cleared) were identified by listening. `SRP_13` is the structure-defend ping.
 
-Never reference the colourblind (`*_cb*`) files in the app.
+Never reference the colourblind files in the app: the `*_cb*` ones, and the 128 px icons from `PingUpdate/Need/` (lime, lemon, blue and pink where the normal set is teal, gold, cyan and red).
+
+## Room UI art
+
+`assets/ui` holds the art the room panel, the vote widgets and the text box are drawn with. `UI_ART` in the script lists each file: where it comes from and, for an atlas, the box cut out of it. Needs Pillow.
+
+```bash
+py -3.14 tools/extract-assets/extract_assets.py --league "C:/Riot Games/League of Legends" --ui
+```
+
+- In-game, from `Game/DATA/FINAL/UI.wad.client`: the surrender widget (`SurrenderAtlas.tex`), the Tab scoreboard (`ScoreboardAtlas.tex`), the options window and its buttons (`OptionsMenuAtlas.tex`). League's fonts are not taken: they are licensed from a type foundry.
+- Client, from the plugin WADs: the Summoner's Rift scene and map icon (`rcp-be-lol-game-data`), and from `rcp-fe-lol-static-assets` and `rcp-fe-lol-navigation` the ready check frame and mask, the Accept button art, the four timer videos and three sounds (match found, countdown, accepted loop) that the client's ready check plays.
+
+The crop boxes were measured from the decoded atlases. After a patch that moves things in an atlas, decode it again and check each piece.
 
 ## Emotes
 

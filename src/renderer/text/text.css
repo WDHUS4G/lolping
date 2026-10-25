@@ -1,0 +1,15 @@
+@import '../league.css';
+
+:root { color-scheme: dark; font-family: var(--sans); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+/* The in-game options window's frame around its sunken field. */
+main { height: 100%; padding: 0 2px; color: var(--gold-1); }
+.row { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border: 1px solid var(--gold-5); background: url("/ui/options-field.png") 0 0 / 100% 100%; }
+.row:focus-within { border-color: var(--gold-4); }
+input { flex: 1; min-width: 0; height: 100%; border: 0; padding: 0; background: transparent; color: inherit; font: 600 15px/1 var(--sans); outline: none; }
+input::placeholder { color: var(--grey-2); font-weight: 400; }
+#count { flex: none; color: var(--grey-1); font-size: 12px; font-variant-numeric: tabular-nums; }
+#count.full { color: var(--red); }
+small { display: block; height: 18px; margin-top: 1px; padding: 0 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--grey-1); font-size: 11px; line-height: 18px; }
+small.warn { color: var(--red); }

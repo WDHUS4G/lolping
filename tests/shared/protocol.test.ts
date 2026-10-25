@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { configCommand, parseHelperLine, serializeCommand } from '../../src/shared/protocol';
+import { DEFAULT_FEATURES } from '../../src/shared/features';
 import { DEFAULT_SETTINGS } from '../../src/shared/settings';
 
 describe('parseHelperLine', () => {
@@ -11,6 +12,9 @@ describe('parseHelperLine', () => {
     expect(parseHelperLine('{"type":"click","x":5,"y":6}')).toEqual({ type: 'click', x: 5, y: 6, wheel: 'ping' });
     expect(parseHelperLine('{"type":"cancel"}')).toEqual({ type: 'cancel' });
     expect(parseHelperLine('{"type":"toggled","enabled":false}')).toEqual({ type: 'toggled', enabled: false });
+    expect(parseHelperLine('{"type":"textRequested"}')).toEqual({ type: 'textRequested' });
+    expect(parseHelperLine('{"type":"panel","show":true}')).toEqual({ type: 'panel', show: true });
+    expect(parseHelperLine('{"type":"panel","show":false}')).toEqual({ type: 'panel', show: false });
     expect(parseHelperLine('{"type":"error","message":"boom"}')).toEqual({ type: 'error', message: 'boom' });
     expect(parseHelperLine('{"type":"error","code":"noAccess","message":"x"}')).toEqual({ type: 'error', code: 'noAccess', message: 'x' });
     expect(parseHelperLine('{"type":"sim","swallow":true,"inject":"down:left"}')).toEqual({ type: 'sim', swallow: true, inject: 'down:left' });
@@ -28,7 +32,7 @@ describe('parseHelperLine', () => {
 
   it('rejects malformed lines', () => {
     for (const line of ['', 'nope', '42', 'null', '{"type":"wheelOpen","x":1}', '{"type":"click","x":1.5,"y":2}',
-      '{"type":"toggled"}', '{"type":"mystery"}', '{"x":1,"y":2}']) {
+      '{"type":"toggled"}', '{"type":"panel"}', '{"type":"panel","show":"yes"}', '{"type":"mystery"}', '{"x":1,"y":2}']) {
       expect(parseHelperLine(line), line).toBeNull();
     }
   });
@@ -39,8 +43,23 @@ describe('commands', () => {
     expect(configCommand(DEFAULT_SETTINGS, true)).toEqual({
       type: 'config', trigger: 'alt', triggerVk: 0, clickPing: false, gameCheck: true,
       emoteTrigger: 'ctrl', emoteTriggerVk: 0, emoteClick: false, dragThresholdPx: 8,
-      toggleMods: 3, toggleVk: 0x50, enabled: true,
+      toggleMods: 3, toggleVk: 0x50, textMods: 2, textVk: 0, panelVk: 0, enabled: true,
     });
+  });
+
+  it('sends textVk 0 outside a room', () => {
+    expect(configCommand(DEFAULT_SETTINGS, true, { text: false, panel: false })).toMatchObject({ textMods: 2, textVk: 0 });
+  });
+
+  it('sends the text shortcut while the text key is live', () => {
+    expect(configCommand(DEFAULT_SETTINGS, true, { text: true, panel: false })).toMatchObject({ textMods: 2, textVk: 0x54 });
+  });
+
+  it('sends panelVk 0 outside a room and the panel key inside one', () => {
+    expect(configCommand(DEFAULT_SETTINGS, true)).toMatchObject({ panelVk: 0 });
+    expect(configCommand(DEFAULT_SETTINGS, true, { text: false, panel: false })).toMatchObject({ panelVk: 0 });
+    expect(configCommand(DEFAULT_SETTINGS, true, { text: false, panel: true })).toMatchObject({ panelVk: 9 });
+    expect(configCommand({ ...DEFAULT_SETTINGS, panelKey: 0xc0 }, true, { text: true, panel: true })).toMatchObject({ panelVk: 0xc0 });
   });
 
   it('builds a config command for a custom key trigger', () => {
@@ -55,6 +74,16 @@ describe('commands', () => {
       .toMatchObject({ emoteTrigger: 'mouse5', emoteTriggerVk: 0, emoteClick: true });
     expect(configCommand({ ...DEFAULT_SETTINGS, emoteTrigger: { vk: 0x54 } }, true))
       .toMatchObject({ trigger: 'alt', triggerVk: 0, emoteTrigger: 'vk', emoteTriggerVk: 0x54 });
+  });
+
+  it('sends no emote key while emotes are off', () => {
+    const c = configCommand({ ...DEFAULT_SETTINGS, emoteClick: true, features: { ...DEFAULT_FEATURES, emotes: false } }, true);
+    expect(c).toMatchObject({ emoteTrigger: 'off', emoteTriggerVk: 0, emoteClick: false });
+  });
+
+  it('keeps the emote key while only rooms are off', () => {
+    const c = configCommand({ ...DEFAULT_SETTINGS, features: { ...DEFAULT_FEATURES, rooms: false } }, true);
+    expect(c).toMatchObject({ emoteTrigger: 'ctrl' });
   });
 
   it('serializes one command per line', () => {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { deriveRoomKeys, MAX_PACKET, open, seal } from '../../src/main/roomCrypto';
+import {
+  deriveRoomKeys, makeIdentity, MAX_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody,
+} from '../../src/main/roomCrypto';
+import { PEER_RE } from '../../src/shared/roomProtocol';
 
 describe('deriveRoomKeys', () => {
   // Computed once with plain node:crypto (scrypt N=2^15 r=8 p=1, then HKDF-SHA256). Every OS must derive the same keys.
@@ -47,5 +50,42 @@ describe('seal / open', () => {
 
   it('refuses to seal more than fits in a packet', () => {
     expect(() => seal(key, new Uint8Array(MAX_PACKET))).toThrow();
+  });
+});
+
+describe('room signatures', () => {
+  const seed = (v: number): Uint8Array => new Uint8Array(32).fill(v);
+  const body = new TextEncoder().encode('{"t":"bye"}');
+
+  it('derives the same key and peer id from the same seed', () => {
+    const a = makeIdentity(seed(1));
+    expect(a.pk).toHaveLength(32);
+    expect(makeIdentity(seed(1)).pk.equals(a.pk)).toBe(true);
+    expect(peerIdOf(a.pk)).toMatch(PEER_RE);
+    expect(peerIdOf(makeIdentity(seed(1)).pk)).toBe(peerIdOf(a.pk));
+    expect(peerIdOf(makeIdentity(seed(2)).pk)).not.toBe(peerIdOf(a.pk));
+  });
+
+  it('verifies a signature only for the same bytes and the same key', () => {
+    const a = makeIdentity(seed(1));
+    const sig = signBody(a, body);
+    expect(sig).toHaveLength(88);
+    const key = publicKeyOf(a.pk);
+    expect(key).not.toBeNull();
+    if (!key) return;
+    expect(verifyBody(key, body, sig)).toBe(true);
+    const changed = Uint8Array.from(body);
+    changed[3] ^= 1;
+    expect(verifyBody(key, changed, sig)).toBe(false);
+    expect(verifyBody(key, body, signBody(makeIdentity(seed(2)), body))).toBe(false);
+  });
+
+  it('rejects malformed signatures and keys without throwing', () => {
+    const a = makeIdentity(seed(1));
+    const key = publicKeyOf(a.pk);
+    if (!key) throw new Error('no key');
+    expect(verifyBody(key, body, Buffer.alloc(63).toString('base64'))).toBe(false);
+    expect(verifyBody(key, body, '!!!')).toBe(false);
+    expect(publicKeyOf(Buffer.alloc(31))).toBeNull();
   });
 });

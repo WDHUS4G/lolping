@@ -72,7 +72,29 @@ main.content { overflow: auto; padding: 4px 28px 28px 20px; }
 .weRemove:hover, .weRemove:focus-visible { opacity: 1; background: var(--colorNeutralBackground3Hover); }
 .weRemove:focus-visible { outline: 2px solid var(--colorStrokeFocus2); }
 .weCell.removable .weWhere { right: auto; left: 4px; }
+.weTool { position: absolute; bottom: 3px; right: 3px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; font-size: 12px; cursor: pointer;
+  background: var(--colorNeutralBackground3); color: var(--colorNeutralForeground3); opacity: .75; }
+.weTool.on { color: var(--colorBrandForeground1); opacity: 1; }
+.weTool:hover, .weTool:focus-visible { opacity: 1; background: var(--colorNeutralBackground3Hover); }
+.weTool:focus-visible { outline: 2px solid var(--colorStrokeFocus2); }
 .wePool.filesOver .weTiles { outline: 2px dashed var(--colorBrandStroke1); outline-offset: -1px; border-radius: 6px; }
+
+/* The effect picker, fixed to the viewport (WheelEditor renders it once, at the cursor): a grid of tiles, each playing
+   one effect live on the emote's own image. The stages are dark on purpose — the glows are screen-blended light, and
+   they read over a dark backdrop like they do over the game. */
+.fxPicker {
+  position: fixed; z-index: 100; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; width: 308px;
+  max-height: calc(100vh - 16px); overflow-y: auto; padding: 2px 8px 8px; border-radius: 8px;
+  background: var(--colorNeutralBackground1); border: 1px solid var(--colorNeutralStroke1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}
+.fxPickerTitle { grid-column: 1 / -1; padding: 6px 4px 4px; font-size: 11px; font-weight: 600; color: var(--colorNeutralForeground3); }
+.fxCell { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 2px 5px; border: 0; border-radius: 6px; background: none; font: inherit; cursor: pointer; }
+.fxCell:hover { background: var(--colorNeutralBackground1Hover); }
+.fxCell.current { outline: 2px solid var(--colorBrandStroke1); outline-offset: -1px; }
+.fxStage { position: relative; display: block; flex: none; border-radius: 5px; overflow: hidden;
+  background: radial-gradient(120% 130% at 50% 18%, #233641 0%, #0b1318 78%); }
+.fxName { max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; color: var(--colorNeutralForeground2); }
 /* Add image… sits under the scroll box, so it stays in view however far the pool is scrolled. */
 .weImport { display: grid; gap: 4px; margin-top: 10px; }
 .weImportRow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
@@ -90,10 +112,24 @@ main.content { overflow: auto; padding: 4px 28px 28px 20px; }
 .card.permission ol { margin: 6px 0 12px; padding-left: 18px; }
 .card.permission .actions { display: flex; gap: 8px; }
 /* Room */
-.swatches { display: flex; gap: 6px; }
-.swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid transparent; outline-offset: 1px; cursor: pointer; }
+.swatches { display: flex; gap: 6px; align-items: center; }
+/* display: contents keeps the radiogroup wrapper out of the flex row, so the picker sits beside the palette. */
+.swatchRow { display: contents; }
+/* box-sizing: the UA sheet gives <button> border-box but <label> content-box, which would make the picker bigger. */
+.swatch { box-sizing: border-box; width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid transparent; outline-offset: 1px; cursor: pointer; }
 .swatch.sel { border-color: var(--colorNeutralForeground1); }
 .swatch:focus-visible { outline: 2px solid var(--colorStrokeFocus2); }
+.swatch.custom { position: relative; border-color: var(--stroke); border-style: dashed; }
+.swatch.custom.sel { border-color: var(--colorNeutralForeground1); border-style: solid; }
+/* Unset: a rainbow reads as "pick any colour" where a plain swatch just looked like a ninth colour. */
+.swatch.custom.unset { background: conic-gradient(from 0deg, #f06292, #ff8a65, #ffd54f, #aed581, #4db6ac, #4fc3f7, #ba68c8, #f06292); }
+.swatch.custom.unset::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 9px; height: 9px; transform: translate(-50%, -50%);
+  background-image: linear-gradient(#fff, #fff), linear-gradient(#fff, #fff);
+  background-size: 9px 2px, 2px 9px; background-position: center; background-repeat: no-repeat;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, .9));
+}
+.swatch.custom input { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; cursor: pointer; }
 .card.roomJoin { flex-wrap: wrap; }
 .card.roomJoin .lbl { min-width: 220px; }
 .card.roomJoin .desc + .desc { margin-top: 4px; }
@@ -118,3 +154,8 @@ main.content { overflow: auto; padding: 4px 28px 28px 20px; }
 .card.update.failed { border-color: #ff9c48; }
 .card.update.failed .icon { color: #ff9c48; }
 .updateBar { margin-top: 4px; }
+
+/* Linux uses native window decorations and the desktop font. */
+[data-platform="linux"] .app { grid-template-rows: 1fr; }
+[data-platform="linux"] .titlebar { display: none; }
+[data-platform="linux"] body { font-family: system-ui, sans-serif; }

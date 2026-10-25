@@ -4,7 +4,7 @@ import { MOD } from '../../src/shared/keys';
 import { formatRoomCode, makeRoomCode } from '../../src/shared/roomCode';
 import {
   DEFAULT_SETTINGS, keyboardTriggers, mergeSettings, normalizeSettings, overlaySettings, patchClashes, rendererPatch, sameTrigger,
-  triggerLabel, triggersClash,
+  soundLevel, triggerLabel, triggersClash,
 } from '../../src/shared/settings';
 
 describe('normalizeSettings', () => {
@@ -48,6 +48,66 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ toggleHotkey: { mods: 99, vk: 0x4b } }).toggleHotkey).toEqual(DEFAULT_SETTINGS.toggleHotkey);
   });
 
+  it('keeps a valid text shortcut and otherwise uses its own default', () => {
+    expect(normalizeSettings({ textHotkey: { mods: MOD.win, vk: 0x59 } }).textHotkey).toEqual({ mods: MOD.win, vk: 0x59 });
+    expect(normalizeSettings({ textHotkey: { mods: MOD.shift, vk: 0x59 } }).textHotkey).toEqual(DEFAULT_SETTINGS.textHotkey);
+    expect(normalizeSettings({ textHotkey: null }).textHotkey).toEqual(DEFAULT_SETTINGS.textHotkey);
+  });
+
+  it('defaults the text shortcut to Alt+T', () => {
+    expect(DEFAULT_SETTINGS.textHotkey).toEqual({ mods: MOD.alt, vk: 0x54 });
+    expect(normalizeSettings({}).textHotkey).toEqual({ mods: MOD.alt, vk: 0x54 });
+  });
+
+  it('defaults the panel key to Tab', () => {
+    expect(DEFAULT_SETTINGS.panelKey).toBe(0x09);
+    expect(normalizeSettings({}).panelKey).toBe(0x09);
+    expect(normalizeSettings({ version: 1, volume: 50 }).panelKey).toBe(0x09);
+  });
+
+  it('keeps a plain key as the panel key', () => {
+    expect(normalizeSettings({ panelKey: 0xc0 }).panelKey).toBe(0xc0);
+    expect(normalizeSettings({ panelKey: 0x71 }).panelKey).toBe(0x71);
+  });
+
+  it('moves the panel key off a key another shortcut uses', () => {
+    for (const panelKey of [0x10, 0x11, 0x12, 0xa0, 0xa5, 0x5b, 0x1b, 0, 255, 9.5, '9', null]) {
+      expect(normalizeSettings({ panelKey }).panelKey, String(panelKey)).toBe(0x09);
+    }
+    expect(normalizeSettings({ panelKey: 0x56, trigger: { vk: 0x56 } }).panelKey).toBe(0x09);
+    expect(normalizeSettings({ panelKey: 0x56, emoteTrigger: { vk: 0x56 } }).panelKey).toBe(0x09);
+    expect(normalizeSettings({ panelKey: 0x56, emoteTrigger: { vk: 0x56 }, trigger: 'ctrl' }).panelKey).toBe(0x09);
+    expect(normalizeSettings({ panelKey: 0x14, trigger: 'capslock' }).panelKey).toBe(0x09);
+    expect(normalizeSettings({ panelKey: 0x4b, toggleHotkey: { mods: MOD.ctrl, vk: 0x4b } }).panelKey).toBe(0x09);
+    expect(normalizeSettings({ panelKey: 0x59, textHotkey: { mods: MOD.win, vk: 0x59 } }).panelKey).toBe(0x09);
+  });
+
+  it('falls back to a free key when Tab is taken by a custom ping or emote key', () => {
+    expect(normalizeSettings({ trigger: { vk: 0x09 } }).panelKey).toBe(0xc0);
+    expect(normalizeSettings({ trigger: { vk: 0x09 }, panelKey: 0x1b }).panelKey).toBe(0xc0);
+    expect(normalizeSettings({ trigger: { vk: 0x09 }, emoteTrigger: { vk: 0xc0 } }).panelKey).toBe(0x71);
+  });
+
+  it('lets a shortcut change after a custom Tab trigger moved the panel key', () => {
+    const loaded = normalizeSettings({ trigger: { vk: 0x09 } });
+    expect(patchClashes(loaded, { toggleHotkey: { mods: MOD.ctrl, vk: 0x4b } })).toBe(false);
+    expect(patchClashes(loaded, { emoteTrigger: { vk: 0x4b } })).toBe(false);
+    // A store that already clashes on the panel key can still save a patch that doesn't make it worse.
+    const stuck = { ...loaded, panelKey: 0x09 };
+    expect(patchClashes(stuck, { toggleHotkey: { mods: MOD.ctrl, vk: 0x4b } })).toBe(false);
+  });
+
+  it('moves the text shortcut off the pause shortcut', () => {
+    expect(normalizeSettings({ toggleHotkey: { mods: MOD.alt, vk: 0x54 } })).toMatchObject({
+      toggleHotkey: { mods: MOD.alt, vk: 0x54 },
+      textHotkey: { mods: MOD.alt, vk: 0x59 },
+    });
+    expect(normalizeSettings({
+      toggleHotkey: { mods: MOD.ctrl | MOD.alt, vk: 0x58 },
+      textHotkey: { mods: MOD.ctrl | MOD.alt, vk: 0x58 },
+    }).textHotkey).toEqual(DEFAULT_SETTINGS.textHotkey);
+  });
+
   it('rejects a Shift-only toggle hotkey (it would swallow ordinary typing)', () => {
     expect(normalizeSettings({ toggleHotkey: { mods: MOD.shift, vk: 0x41 } }).toggleHotkey).toEqual(DEFAULT_SETTINGS.toggleHotkey);
     expect(normalizeSettings({ toggleHotkey: { mods: MOD.ctrl | MOD.shift, vk: 0x41 } }).toggleHotkey).toEqual({ mods: 5, vk: 0x41 });
@@ -81,6 +141,33 @@ describe('normalizeSettings', () => {
 
   it('does not share the default hotkey object', () => {
     expect(normalizeSettings(undefined).toggleHotkey).not.toBe(DEFAULT_SETTINGS.toggleHotkey);
+    expect(normalizeSettings(undefined).textHotkey).not.toBe(DEFAULT_SETTINGS.textHotkey);
+  });
+});
+
+describe('wheel size', () => {
+  it('keeps the existing size for settings files without a wheel size', () => {
+    expect(normalizeSettings({ version: 1, pingSizePx: 120 }).wheelSizePx).toBe(600);
+  });
+
+  it('clamps and rounds the wheel size', () => {
+    expect(normalizeSettings({ wheelSizePx: 100 }).wheelSizePx).toBe(300);
+    expect(normalizeSettings({ wheelSizePx: 1200 }).wheelSizePx).toBe(900);
+    expect(normalizeSettings({ wheelSizePx: 457 }).wheelSizePx).toBe(460);
+  });
+
+  it('falls back to the default for invalid wheel sizes', () => {
+    for (const wheelSizePx of [undefined, null, '450', NaN, Infinity, -Infinity]) {
+      expect(normalizeSettings({ wheelSizePx }).wheelSizePx).toBe(600);
+    }
+  });
+
+  it('accepts renderer patches and sends the size to overlays without changing effect sizes', () => {
+    const s = mergeSettings(DEFAULT_SETTINGS, rendererPatch({ wheelSizePx: 450 }));
+    expect(s.wheelSizePx).toBe(450);
+    expect(overlaySettings(s).wheelSizePx).toBe(450);
+    expect(s.pingSizePx).toBe(DEFAULT_SETTINGS.pingSizePx);
+    expect(s.emoteSizePx).toBe(DEFAULT_SETTINGS.emoteSizePx);
   });
 });
 
@@ -91,8 +178,13 @@ describe('room settings', () => {
     const s = normalizeSettings({}, 'win', identity);
     expect(s).toMatchObject({
       displayName: 'darren', tagColor: 5, incomingPingLimit: 5, allowInternet: true, rejoinRoom: true,
-      lastRoomCode: null, roomMuted: false,
+      lastRoomCode: null, roomMuted: false, friendEmotes: true,
     });
+  });
+
+  it('turns friends’ custom emotes off only by an explicit false', () => {
+    expect(normalizeSettings({ friendEmotes: false }).friendEmotes).toBe(false);
+    expect(normalizeSettings({ friendEmotes: 'no' }).friendEmotes).toBe(true);
   });
 
   it('defaults to Player and colour 0 without an identity', () => {
@@ -109,6 +201,24 @@ describe('room settings', () => {
   it('replaces an invalid tag colour with the identity colour', () => {
     expect(normalizeSettings({ tagColor: 9 }, 'win', identity).tagColor).toBe(5);
     expect(normalizeSettings({ tagColor: 2 }, 'win', identity).tagColor).toBe(2);
+  });
+
+  it('keeps a well-formed custom tag colour and drops anything else', () => {
+    expect(DEFAULT_SETTINGS.tagColorCustom).toBeNull();
+    expect(normalizeSettings({ tagColorCustom: [79, 195, 247] }).tagColorCustom).toEqual([79, 195, 247]);
+    for (const v of [[0, 0], [0, 0, 999], [0, 0, -1], ['1', 2, 3], 'red', 3, null, undefined]) {
+      expect(normalizeSettings({ tagColorCustom: v }).tagColorCustom).toBeNull();
+    }
+  });
+
+  it('stores a custom tag colour already lightened, so the swatch, the wire and the tag agree', () => {
+    // Too dark to read on the dark pill: stored lifted, and neutral in stays neutral out.
+    const dark = normalizeSettings({ tagColorCustom: [0, 0, 0] }).tagColorCustom;
+    expect(dark).not.toBeNull();
+    expect(dark?.[0]).toBe(dark?.[1]);
+    expect(dark?.[0]).toBeGreaterThan(100);
+    // A colour that already reads is stored untouched.
+    expect(normalizeSettings({ tagColorCustom: [255, 255, 255] }).tagColorCustom).toEqual([255, 255, 255]);
   });
 
   it('sanitises the display name and falls back to the identity name', () => {
@@ -190,6 +300,11 @@ describe('emote settings', () => {
     ];
     expect(normalizeSettings({ customEmotes: raw }).customEmotes).toEqual([entry('a'), entry('e', 'Kept', true)]);
     expect(normalizeSettings({ customEmotes: 'nope' }).customEmotes).toEqual([]);
+  });
+
+  it('custom emotes keep a sound flag only when it is true', () => {
+    const list = normalizeSettings({ customEmotes: [{ ...entry('a'), sound: true }, { ...entry('b'), sound: 'yes' }] }).customEmotes;
+    expect(list).toEqual([{ ...entry('a'), sound: true }, entry('b')]);
   });
 
   it('custom emotes keep the first 24', () => {
@@ -291,8 +406,25 @@ describe('emote key clashes', () => {
     expect(patchClashes(current, { emoteTrigger: 'shift' })).toBe(false);
     expect(patchClashes(current, { emoteTrigger: 'off' })).toBe(false);
     expect(patchClashes(current, { volume: 3 })).toBe(false);
-    expect(patchClashes({ ...current, emoteTrigger: { vk: 84 } }, { toggleHotkey: { mods: 3, vk: 84 } })).toBe(true);
-    expect(patchClashes({ ...current, emoteTrigger: { vk: 84 } }, { toggleHotkey: { mods: 3, vk: 85 } })).toBe(false);
+    expect(patchClashes({ ...current, emoteTrigger: { vk: 86 } }, { toggleHotkey: { mods: 3, vk: 86 } })).toBe(true);
+    expect(patchClashes({ ...current, emoteTrigger: { vk: 86 } }, { toggleHotkey: { mods: 3, vk: 87 } })).toBe(false);
+  });
+
+  it('patchClashes lets a text chord share a custom trigger key: the helper tells them apart by mods (issue #100)', () => {
+    expect(patchClashes({ ...current, trigger: { vk: 0x56 } }, { textHotkey: { mods: MOD.alt, vk: 0x56 } })).toBe(false);
+    expect(patchClashes({ ...current, emoteTrigger: { vk: 0x56 } }, { textHotkey: { mods: MOD.alt, vk: 0x56 } })).toBe(false);
+    expect(patchClashes({ ...current, trigger: { vk: 0x56 } }, { trigger: 'alt' })).toBe(false);
+    expect(patchClashes({ ...current, textHotkey: { mods: MOD.alt, vk: 0x56 } }, { emoteTrigger: { vk: 0x56 } })).toBe(false);
+    // A setup that already clashes can still save a setting that touches none of the keys.
+    expect(patchClashes({ ...current, emoteTrigger: { vk: 0x54 } }, { volume: 3 })).toBe(false);
+  });
+
+  it('patchClashes keeps the panel key off the other keys, whichever side the patch changes', () => {
+    expect(patchClashes(current, { panelKey: current.toggleHotkey.vk })).toBe(true);
+    expect(patchClashes(current, { toggleHotkey: { mods: MOD.ctrl, vk: current.panelKey } })).toBe(true);
+    expect(patchClashes(current, { trigger: { vk: current.panelKey } })).toBe(true);
+    expect(patchClashes(current, { panelKey: 0x51 })).toBe(false);
+    expect(patchClashes({ ...current, panelKey: 0x51 }, { volume: 3 })).toBe(false);
   });
 
   it('patchClashes judges the merged result, so swapping both keys at once is fine', () => {
@@ -380,10 +512,17 @@ describe('helpers', () => {
     expect(normalizeSettings({ trigger: 'win' }, 'mac').trigger).toBe('win');
   });
 
+  it('repairs custom Caps Lock triggers on Mac when loading or updating settings', () => {
+    const caps = { trigger: { vk: 0x14 }, emoteTrigger: { vk: 0x14 } };
+    expect(normalizeSettings(caps, 'mac')).toMatchObject({ trigger: 'alt', emoteTrigger: 'ctrl' });
+    expect(mergeSettings(DEFAULT_SETTINGS, caps, 'mac')).toMatchObject({ trigger: 'alt', emoteTrigger: 'ctrl' });
+    expect(normalizeSettings({ trigger: { vk: 0x14 }, emoteTrigger: 'off' }, 'win').trigger).toEqual({ vk: 0x14 });
+  });
+
   it('extracts overlay settings', () => {
     expect(overlaySettings(DEFAULT_SETTINGS)).toEqual({
-      pingSizePx: 110, pingDurationS: 3.2, volume: 70, muted: false, tickSound: true,
-      wheel: ['danger', 'push', 'omw', 'allin', 'assist', 'needvision', 'missing', 'enemyvision'], clickPingId: 'generic',
+      pingSizePx: 110, pingDurationS: 3.2, keepLastPing: false, volume: 70, muted: false, tickSound: true,
+      wheelSizePx: 600, wheel: ['danger', 'push', 'omw', 'allin', 'assist', 'needvision', 'missing', 'enemyvision'], clickPingId: 'generic',
       emoteWheel: [...DEFAULT_EMOTE_WHEEL], clickEmoteId: DEFAULT_CLICK_EMOTE, emoteSizePx: 150, emoteSound: true, customEmotes: [],
     });
   });
@@ -423,5 +562,58 @@ describe('update settings', () => {
     const s = mergeSettings(DEFAULT_SETTINGS, { updateNotifiedVersion: '0.6.0', autoUpdateCheck: false });
     expect([s.autoUpdateCheck, s.updateNotifiedVersion]).toEqual([false, '0.6.0']);
     expect(mergeSettings(s, { updateNotifiedVersion: 'junk' }).updateNotifiedVersion).toBeNull();
+  });
+});
+
+describe('feature settings', () => {
+  it('loads a 0.5.2 settings file with every feature on', () => {
+    const { features: _features, ...old } = DEFAULT_SETTINGS;
+    expect(normalizeSettings(old).features).toEqual(DEFAULT_SETTINGS.features);
+    expect(Object.values(normalizeSettings(old).features).every((v) => v)).toBe(true);
+  });
+
+  it('keeps a switched-off feature', () => {
+    const s = normalizeSettings({ features: { ...DEFAULT_SETTINGS.features, emotes: false } });
+    expect(s.features.emotes).toBe(false);
+    expect(s.features.rooms).toBe(true);
+  });
+
+  it('falls back to every feature on when features is not an object', () => {
+    for (const raw of ['yes', 1, null, [true]]) expect(normalizeSettings({ features: raw }).features).toEqual(DEFAULT_SETTINGS.features);
+    expect(normalizeSettings({ features: { rooms: 1 } }).features.rooms).toBe(true);
+  });
+});
+
+describe('room text settings', () => {
+  it('defaults room text to the pointed spot', () => {
+    expect(DEFAULT_SETTINGS.roomTextStyle).toBe('spot');
+    const { roomTextStyle: _style, ...old } = DEFAULT_SETTINGS;
+    expect(normalizeSettings(old).roomTextStyle).toBe('spot');
+  });
+
+  it('keeps the scrolling style and falls back to the spot for a bad value', () => {
+    expect(normalizeSettings({ roomTextStyle: 'danmaku' }).roomTextStyle).toBe('danmaku');
+    for (const raw of ['scroll', 1, null, {}]) expect(normalizeSettings({ roomTextStyle: raw }).roomTextStyle).toBe('spot');
+  });
+});
+
+describe('soundLevel', () => {
+  it('turns the volume setting into 0 to 1, and is 0 while muted', () => {
+    expect(soundLevel({ volume: 70, muted: false })).toBe(0.7);
+    expect(soundLevel({ volume: 70, muted: true })).toBe(0);
+  });
+});
+
+describe('custom emote effects', () => {
+  it('keeps a stored effect through normalization, drops a malformed one to the plain pop', () => {
+    const raw = { customEmotes: [
+      { id: `c:${'ab'.repeat(16)}`, name: 'A', animated: false, fx: 5 },
+      { id: `c:${'cd'.repeat(16)}`, name: 'B', animated: true, fx: 6 },
+      { id: `c:${'ef'.repeat(16)}`, name: 'C', animated: false },
+    ] };
+    const s = normalizeSettings(raw);
+    expect(s.customEmotes[0]).toMatchObject({ fx: 5 });
+    expect(s.customEmotes[1].fx).toBeUndefined(); // 6 is out of range: the plain pop
+    expect(s.customEmotes[2].fx).toBeUndefined();
   });
 });

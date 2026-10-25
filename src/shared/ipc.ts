@@ -1,20 +1,26 @@
-import type { EmoteArt, EmoteFile, EmoteRef, ImportResult } from './emotes';
+import type { EmoteArt, EmoteFile, EmoteRef, ImportResult, SoundResult } from './emotes';
+import type { Lang } from './i18n';
 import type { PingId } from './pings';
 import type { Platform } from './platform';
 import type { HelperStatus, WheelKind } from './protocol';
-import type { JoinResult, RoomState } from './room';
-import type { OverlaySettings, Settings } from './settings';
+import type { JoinResult, RoomState, RoomStateCore } from './room';
+import type { TagRgb } from './roomColors';
+import type { HistoryLine } from './roomHistory';
+import { PEER_RE } from './roomProtocol';
+import type { OverlaySettings, RoomTextStyle, Settings } from './settings';
 import type { UpdateState } from './update';
+import type { VoteView } from './voteTally';
 
 export interface Point {
   x: number;
   y: number;
 }
 
-/** The name tag under a room member's ping. `color` indexes TAG_COLORS. */
+/** The name tag under a room member's ping. `color` indexes TAG_COLORS; `rgb` is a custom colour when set. */
 export interface PingTag {
   name: string;
   color: number;
+  rgb?: TagRgb | null;
 }
 
 /** main → overlay renderer messages. Points are CSS pixels inside that overlay. */
@@ -25,20 +31,103 @@ export interface OverlayEvents {
   'wheel:move': Point & { wheel?: WheelKind };
   'wheel:release': Point & { wheel?: WheelKind };
   'wheel:cancel': null;
-  /** `tag` marks a ping from another room member. */
-  'ping:spawn': Point & { id: PingId; tag?: PingTag };
+  /** `tag` marks a ping from another room member. `keep`: our own ping that stays until 'ping:unkeep' or our next one. */
+  'ping:spawn': Point & { id: PingId; tag?: PingTag; keep?: boolean };
+  /** Removes the ping kept on this display, if any: we pinged on another display, or paused. */
+  'ping:unkeep': null;
   /** `owner` is 'self', 'preview' or a room member: each owner has at most one emote on screen. */
   'emote:spawn': Point & { owner: string; art: EmoteArt; tag?: PingTag };
   'emote:clear': { owner: string };
   'toast:show': { title: string; body: string };
+  /** `owner` is 'self' or a room member: each owner has at most 3 lines on screen. */
+  'text:spawn': Point & { text: string; owner: string; style: RoomTextStyle; tag?: PingTag };
 }
 
 export type OverlayChannel = keyof OverlayEvents;
 
 export const OVERLAY_CHANNELS: readonly OverlayChannel[] = [
-  'overlay:settings', 'wheel:open', 'wheel:move', 'wheel:release', 'wheel:cancel', 'ping:spawn', 'emote:spawn', 'emote:clear',
-  'toast:show',
+  'overlay:settings', 'wheel:open', 'wheel:move', 'wheel:release', 'wheel:cancel', 'ping:spawn', 'ping:unkeep', 'emote:spawn', 'emote:clear',
+  'toast:show', 'text:spawn',
 ];
+
+export const TEXT_CH = { submit: 'text:submit', cancel: 'text:cancel', strings: 'text:strings' } as const;
+
+/** The text box's words, in the language the app uses. */
+export interface TextBoxText {
+  placeholder: string;
+  /** The commands the box understands, shown under the input. */
+  hint: string;
+  /** Shown instead of the hint when the text was a command that doesn't exist. */
+  unknown: string;
+  /** Shown instead of the hint for a vote command while votes are switched off. */
+  votesOff: string;
+}
+
+/** What the app made of a submit: 'sent' closes the box, the others keep it open with a hint. */
+export type TextAnswer = 'sent' | 'unknown' | 'votesOff';
+
+export interface TextApi {
+  /** Resolves with the app's answer; on 'sent' the window closes. */
+  submit(text: string): Promise<TextAnswer>;
+  cancel(): void;
+  strings(): Promise<TextBoxText | null>;
+}
+
+export const PANEL_CH = { state: 'panel:state', action: 'panel:action' } as const;
+
+/** Everything a panel window draws. The roster and the vote widget get the same shape, so one message feeds either. */
+export interface PanelState {
+  view: 'roster' | 'vote';
+  lang: Lang;
+  /** The room's member limit. */
+  max: number;
+  room: RoomStateCore;
+  history: readonly HistoryLine[];
+  vote: VoteView | null;
+  /** The vote's result is in: its widget stays a moment with the buttons off and the countdown stopped. */
+  voteOver: boolean;
+  /** The room text and room votes feature switches. */
+  textOn: boolean;
+  votesOn: boolean;
+  /** The ping sound volume, 0 to 1 (0 when muted): the ready check's sounds play at it. */
+  volume: number;
+}
+
+/** What a click in a panel window asks for. An `alive` line is placed at the cursor by the app, not by the page. */
+export type PanelAction =
+  | { t: 'alive'; peer: string }
+  | { t: 'mute'; peer: string; on: boolean }
+  | { t: 'kick'; peer: string }
+  | { t: 'vote'; kind: 'ff' | 'ready' }
+  | { t: 'ballot'; yes: boolean };
+
+export interface PanelApi {
+  /** Calls `cb` with every state the main process sends; returns the way to stop. */
+  on(cb: (state: PanelState) => void): () => void;
+  act(action: PanelAction): void;
+}
+
+/** A panel window is only a view: whatever it sends is checked here from `unknown`, field by field. */
+export function parsePanelAction(raw: unknown): PanelAction | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const a = raw as Record<string, unknown>;
+  const isPeer = (v: unknown): v is string => typeof v === 'string' && PEER_RE.test(v);
+  const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  switch (a.t) {
+    case 'alive':
+      return isPeer(a.peer) ? { t: 'alive', peer: a.peer } : null;
+    case 'mute':
+      return isPeer(a.peer) && typeof a.on === 'boolean' ? { t: 'mute', peer: a.peer, on: a.on } : null;
+    case 'kick':
+      return isPeer(a.peer) ? { t: 'kick', peer: a.peer } : null;
+    case 'vote':
+      return a.kind === 'ff' || a.kind === 'ready' ? { t: 'vote', kind: a.kind } : null;
+    case 'ballot':
+      return typeof a.yes === 'boolean' ? { t: 'ballot', yes: a.yes } : null;
+    default:
+      return null;
+  }
+}
 
 /** overlay renderer → main: string[] of asset files that failed to load. */
 export const OVERLAY_ASSETS = 'overlay:assets';
@@ -85,6 +174,10 @@ export interface SettingsApi {
   importEmote(file: EmoteFile): Promise<ImportResult>;
   /** Deletes an imported emote's files and entry; wheel slots that used it fall back. */
   removeEmote(id: EmoteRef): Promise<void>;
+  /** Gives one of our imported emotes a sound (OGG, MP3 or WAV bytes), or takes it away with null. */
+  setEmoteSound(id: EmoteRef, sound: Uint8Array | null): Promise<SoundResult>;
+  /** Stores which signature effect the emote plays; undefined puts it back to the plain pop. */
+  setEmoteFx(id: EmoteRef, fx: number | undefined): Promise<void>;
   getAbout(): Promise<About>;
   openSettingsFolder(): Promise<void>;
   openProjectPage(): Promise<void>;

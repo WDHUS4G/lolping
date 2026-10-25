@@ -188,14 +188,31 @@ static void test_escape_cancels_wheel() {
   CHECK(r.swallow && r.emits.empty());
 }
 
-static void test_trigger_released_during_wheel_cancels() {
+// As in League, once the wheel is open only the mouse button decides: letting go of the trigger first
+// keeps the wheel (and a trackpad's three-finger drag, whose button-up comes late, still pings).
+static void test_trigger_released_during_wheel_keeps_wheel() {
   Decision d;
   openWheel(d);
   Result r = d.onEvent(ku(ALT));
-  CHECK(findEmit(r, Emit::Kind::Cancel) != nullptr);
-  CHECK(d.state() == S::SwallowUp);
-  CHECK(d.onEvent(mu(Btn::Left, 130, 100)).swallow);
+  CHECK(r.emits.empty());
+  CHECK(d.state() == S::Wheel);
+  CHECK(r.swallow && r.injects.size() == 3);  // the Alt-up is still masked
+  r = d.onEvent(mv(140, 90));
+  CHECK(findEmit(r, Emit::Kind::WheelMove) != nullptr);
+  r = d.onEvent(mu(Btn::Left, 140, 90));
+  CHECK(r.swallow);
+  const Emit* rel = findEmit(r, Emit::Kind::WheelRelease);
+  CHECK(rel != nullptr && rel->x == 140 && rel->y == 90);
   CHECK(d.state() == S::Idle);
+  CHECK(!d.onEvent(md(Btn::Left, 1, 1)).swallow);  // no trigger held: clicks pass again
+
+  Decision e;
+  openWheel(e);
+  e.onEvent(ku(ALT));
+  r = e.onEvent(kd(ESC));  // Esc still cancels
+  CHECK(r.swallow && findEmit(r, Emit::Kind::Cancel) != nullptr);
+  CHECK(e.onEvent(mu(Btn::Left, 130, 100)).swallow);
+  CHECK(e.state() == S::Idle);
 }
 
 static void test_trigger_released_during_pending_replays_click_after_mask() {
@@ -378,6 +395,349 @@ static void test_hotkey_ignored_while_suspended() {
   CHECK(!d.onEvent(md(Btn::Left, 1, 1)).swallow);  // suspended: no gestures either
 }
 
+static void test_text_hotkey_requests_once() {
+  Config c;
+  c.trigger = Trigger::CustomVk;
+  c.triggerVk = KEY_T;  // the complete shortcut must win over this swallowed custom trigger
+  c.textVk = KEY_T;
+  Decision d;
+  d.setConfig(c);
+  d.onEvent(kd(CTRL));
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(r.swallow);
+  CHECK(findEmit(r, Emit::Kind::TextRequested) != nullptr);
+  Result repeat = d.onEvent(kd(KEY_T));
+  CHECK(repeat.swallow);
+  CHECK(findEmit(repeat, Emit::Kind::TextRequested) == nullptr);
+  CHECK(d.onEvent(ku(KEY_T)).swallow);
+}
+
+static void test_text_hotkey_ignored_while_suspended() {
+  Config c;
+  c.textVk = KEY_T;
+  Decision d;
+  d.setConfig(c);
+  d.setSuspended(true);
+  d.onEvent(kd(CTRL));
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+}
+
+static Decision withAltText(uint32_t textVk = KEY_T) {
+  Config c;
+  c.trigger = Trigger::Alt;
+  c.textMods = ModAlt;
+  c.textVk = textVk;
+  Decision d;
+  d.setConfig(c);
+  return d;
+}
+
+static void test_text_hotkey_fires_with_alt_trigger() {
+  Decision d = withAltText();
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(r.swallow);
+  CHECK(findEmit(r, Emit::Kind::TextRequested) != nullptr);
+  CHECK(d.onEvent(ku(KEY_T)).swallow);
+  r = d.onEvent(ku(ALT));
+  CHECK(findEmit(r, Emit::Kind::Click) == nullptr && findEmit(r, Emit::Kind::WheelOpen) == nullptr);
+  CHECK(d.state() == S::Idle);
+}
+
+static void test_text_hotkey_masks_alt_menu() {
+  Decision d = withAltText();
+  d.onEvent(kd(ALT));
+  d.onEvent(kd(KEY_T));
+  d.onEvent(ku(KEY_T));
+  Result r = d.onEvent(ku(ALT));
+  CHECK(r.swallow);
+  CHECK(r.injects.size() == 3);
+  CHECK(injectIs(r.injects[0], InjectKind::KeyDown, Btn::None, kMaskVk));
+  CHECK(injectIs(r.injects[1], InjectKind::KeyUp, Btn::None, kMaskVk));
+  CHECK(injectIs(r.injects[2], InjectKind::KeyUp, Btn::None, ALT));
+}
+
+static void test_alt_drag_still_opens_wheel_with_text_hotkey() {
+  Decision d = withAltText();
+  d.onEvent(kd(ALT));
+  d.onEvent(md(Btn::Left, 100, 100));
+  d.onEvent(mv(130, 100));
+  CHECK(d.state() == S::Wheel);
+  Result r = d.onEvent(mu(Btn::Left, 130, 100));
+  CHECK(findEmit(r, Emit::Kind::WheelRelease) != nullptr);
+  CHECK(findEmit(r, Emit::Kind::TextRequested) == nullptr);
+}
+
+static void test_text_hotkey_off_when_vk_zero() {
+  Decision d = withAltText(0);
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+  CHECK(!d.onEvent(ku(KEY_T)).swallow);
+  // vk 0 is "off", not "any key": key code 0 with Alt held must not match the shortcut either.
+  r = d.onEvent(kd(0));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+}
+
+static void test_text_hotkey_needs_its_modifier() {
+  Decision d = withAltText();
+  Result r = d.onEvent(kd(KEY_T));  // plain T is ordinary typing
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+  CHECK(!d.onEvent(ku(KEY_T)).swallow);
+}
+
+// #100: T as the emote key and Alt+T as the text shortcut share a key. Alt+T opens the text box; T alone is the emote key.
+static void test_text_hotkey_shares_its_key_with_a_custom_emote_key() {
+  Config c;
+  c.emoteTrigger = Trigger::CustomVk;
+  c.emoteTriggerVk = KEY_T;
+  c.textMods = ModAlt;
+  c.textVk = KEY_T;
+  Decision d;
+  d.setConfig(c);
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(r.swallow && findEmit(r, Emit::Kind::TextRequested) != nullptr);
+  r = d.onEvent(ku(KEY_T));
+  CHECK(r.swallow && r.injects.empty());  // not typed afterwards as a held-back trigger tap
+  r = d.onEvent(ku(ALT));
+  CHECK(findEmit(r, Emit::Kind::WheelOpen) == nullptr && findEmit(r, Emit::Kind::Click) == nullptr);
+
+  r = d.onEvent(kd(KEY_T));  // a plain tap still types T
+  CHECK(r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+  r = d.onEvent(ku(KEY_T));
+  CHECK(r.injects.size() == 2);
+  CHECK(injectIs(r.injects[0], InjectKind::KeyDown, Btn::None, KEY_T));
+  CHECK(injectIs(r.injects[1], InjectKind::KeyUp, Btn::None, KEY_T));
+
+  d.onEvent(kd(KEY_T));  // and T + drag opens the emote wheel
+  CHECK(d.onEvent(md(Btn::Left, 0, 0)).swallow);
+  CHECK(emitIs(findEmit(d.onEvent(mv(0, 40)), Emit::Kind::WheelOpen), WheelKind::Emote));
+  CHECK(emitIs(findEmit(d.onEvent(mu(Btn::Left, 0, 40)), Emit::Kind::WheelRelease), WheelKind::Emote));
+  CHECK(d.onEvent(ku(KEY_T)).swallow);
+}
+
+static void test_nothing_is_live_before_the_first_config() {
+  Decision d;
+  d.onEvent(kd(CTRL));
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+  d.onEvent(ku(ALT));
+  d.onEvent(ku(CTRL));
+  r = d.onEvent(kd(TAB));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+}
+
+static Decision withPanel(uint32_t panelVk = TAB) {
+  Config c;
+  c.panelVk = panelVk;
+  Decision d;
+  d.setConfig(c);
+  return d;
+}
+
+static bool panelShows(const Result& r, bool show) {
+  const Emit* e = findEmit(r, Emit::Kind::Panel);
+  return e != nullptr && e->show == show;
+}
+
+static void test_panel_key_shows_on_press_and_hides_on_release() {
+  Decision d = withPanel();
+  Result r = d.onEvent(kd(TAB));
+  CHECK(r.swallow && panelShows(r, true) && r.injects.empty());
+  r = d.onEvent(kd(TAB));  // auto-repeat
+  CHECK(r.swallow && r.emits.empty() && r.injects.empty());
+  r = d.onEvent(kd(TAB));
+  CHECK(r.swallow && r.emits.empty());
+  r = d.onEvent(ku(TAB));
+  CHECK(r.swallow && panelShows(r, false) && r.injects.empty());
+  r = d.onEvent(kd(TAB));  // the next press shows it again
+  CHECK(r.swallow && panelShows(r, true));
+}
+
+static void test_panel_key_with_modifier_passes() {
+  for (const uint32_t mod : {ALT, CTRL, uint32_t{0xA0}, uint32_t{0x5B}}) {
+    Decision d = withPanel();
+    d.onEvent(kd(mod));
+    Result r = d.onEvent(kd(TAB));
+    CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+    r = d.onEvent(ku(TAB));
+    CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+  }
+}
+
+static void test_panel_key_passes_over_fullscreen_game() {
+  Config c;
+  c.panelVk = TAB;
+  c.gameCheck = true;
+  Decision d;
+  d.setConfig(c);
+  int probedX = -1, probedY = -1;
+  bool fullscreen = true;
+  d.setFullscreenProbe([&](int x, int y) {
+    probedX = x;
+    probedY = y;
+    return fullscreen;
+  });
+  d.onEvent(mv(321, 654));
+  Result r = d.onEvent(kd(TAB));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+  CHECK(probedX == 321 && probedY == 654);  // asked about the screen under the last mouse position
+  CHECK(!d.onEvent(ku(TAB)).swallow);
+  fullscreen = false;
+  r = d.onEvent(kd(TAB));
+  CHECK(r.swallow && panelShows(r, true));
+  d.onEvent(ku(TAB));
+  c.gameCheck = false;  // gameCheck off: the probe is not asked
+  d.setConfig(c);
+  fullscreen = true;
+  r = d.onEvent(kd(TAB));
+  CHECK(r.swallow && panelShows(r, true));
+}
+
+static void test_panel_key_passes_when_off_or_paused() {
+  Decision off = withPanel(0);
+  Result r = off.onEvent(kd(TAB));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+  CHECK(!off.onEvent(ku(TAB)).swallow);
+
+  Decision paused = withPanel();
+  paused.setSuspended(true);
+  r = paused.onEvent(kd(TAB));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+  CHECK(!paused.onEvent(ku(TAB)).swallow);
+
+  Decision disabled = withPanel();
+  disabled.setEnabled(false);
+  r = disabled.onEvent(kd(TAB));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+  CHECK(!disabled.onEvent(ku(TAB)).swallow);
+}
+
+static void test_panel_key_passes_when_it_is_a_wheel_trigger() {
+  Config c;
+  c.panelVk = TAB;
+  c.trigger = Trigger::CustomVk;
+  c.triggerVk = TAB;
+  Decision d;
+  d.setConfig(c);
+  Result r = d.onEvent(kd(TAB));
+  CHECK(findEmit(r, Emit::Kind::Panel) == nullptr);  // the wheel trigger keeps its key
+  CHECK(r.swallow);
+}
+
+static void test_panel_key_up_after_config_change_is_swallowed() {
+  Decision d = withPanel();
+  CHECK(d.onEvent(kd(TAB)).swallow);
+  Config off = d.config();
+  off.panelVk = 0;  // left the room, or the feature went off, with Tab still held
+  d.setConfig(off);
+  Result r = d.onEvent(kd(TAB));  // repeats were never seen by the OS either
+  CHECK(r.swallow && r.emits.empty());
+  r = d.onEvent(ku(TAB));
+  CHECK(r.swallow && panelShows(r, false));
+  r = d.onEvent(kd(TAB));  // and the next Tab is ordinary again
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::Panel) == nullptr);
+  CHECK(!d.onEvent(ku(TAB)).swallow);
+}
+
+static void test_panel_key_up_while_paused_is_swallowed() {
+  Decision d = withPanel();
+  d.onEvent(kd(TAB));
+  d.setSuspended(true);
+  Result r = d.onEvent(ku(TAB));
+  CHECK(r.swallow && panelShows(r, false));
+}
+
+static void test_panel_hides_when_repeats_stop() {
+  Decision d = withPanel();
+  InputEvent down = kd(TAB);
+  down.timeMs = 0;
+  d.onEvent(down);
+  CHECK(d.tick(1400).emits.empty());
+  Result r = d.tick(1600);
+  CHECK(panelShows(r, false));
+  CHECK(d.tick(3000).emits.empty());  // hidden once
+  r = d.onEvent(ku(TAB));  // the real up still never reaches the OS
+  CHECK(r.swallow && r.emits.empty());
+  r = d.onEvent(kd(TAB));
+  CHECK(r.swallow && panelShows(r, true));
+}
+
+static void test_panel_stays_shown_while_another_key_is_pressed() {
+  Decision d = withPanel();
+  InputEvent down = kd(TAB);
+  down.timeMs = 0;
+  d.onEvent(down);
+  // Windows stops Tab's repeats once Shift or W goes down: those presses keep the panel up.
+  InputEvent other = kd(0x57);
+  other.timeMs = 1000;
+  CHECK(!d.onEvent(other).swallow);
+  CHECK(d.tick(2000).emits.empty());
+  CHECK(panelShows(d.tick(2600), false));
+}
+
+static void test_panel_repeats_keep_it_shown() {
+  Decision d = withPanel();
+  InputEvent down = kd(TAB);
+  down.timeMs = 0;
+  d.onEvent(down);
+  down.timeMs = 1000;
+  d.onEvent(down);
+  down.timeMs = 2000;
+  d.onEvent(down);
+  CHECK(d.tick(3000).emits.empty());
+  CHECK(panelShows(d.tick(3600), false));
+}
+
+static void test_panel_with_no_repeat_watchdog_stays_shown_through_a_long_hold() {
+  Decision d = withPanel();
+  d.setPanelRepeatGap(0);  // macOS and Linux: repeats are not a reliable sign the key is still down
+  InputEvent down = kd(TAB);
+  down.timeMs = 0;
+  d.onEvent(down);
+  CHECK(d.tick(60000).emits.empty());
+  CHECK(d.tick(600000).emits.empty());
+  Result r = d.onEvent(ku(TAB));
+  CHECK(r.swallow && panelShows(r, false));
+}
+
+static void test_panel_repeat_gap_is_a_setting() {
+  Decision d = withPanel();
+  d.setPanelRepeatGap(3000);
+  InputEvent down = kd(TAB);
+  down.timeMs = 0;
+  d.onEvent(down);
+  CHECK(d.tick(2500).emits.empty());
+  CHECK(panelShows(d.tick(3100), false));
+}
+
+static void test_release_panel_hides_it_and_keeps_the_up_swallowed() {
+  Decision d = withPanel();
+  CHECK(d.releasePanel().emits.empty());  // nothing shown: nothing to do
+  d.onEvent(kd(TAB));
+  Result r = d.releasePanel();  // the macOS event tap was disabled and enabled again
+  CHECK(panelShows(r, false));
+  CHECK(d.releasePanel().emits.empty());
+  r = d.onEvent(ku(TAB));
+  CHECK(r.swallow && r.emits.empty());
+  r = d.onEvent(kd(TAB));
+  CHECK(r.swallow && panelShows(r, true));
+}
+
+static void test_text_hotkey_ignored_while_paused() {
+  Decision d = withAltText();
+  d.setEnabled(false);
+  d.onEvent(kd(ALT));
+  Result r = d.onEvent(kd(KEY_T));
+  CHECK(!r.swallow && findEmit(r, Emit::Kind::TextRequested) == nullptr);
+  CHECK(!d.onEvent(ku(KEY_T)).swallow);
+}
+
 static void test_disabling_mid_drag_cancels_and_swallows_up() {
   Decision d;
   openWheel(d);
@@ -523,6 +883,74 @@ static void test_custom_key_trigger() {
   CHECK(d.onEvent(ku(KEY_V)).swallow);
   d.setEnabled(false);
   CHECK(!d.onEvent(kd(KEY_V)).swallow);  // disabled: typing V works again
+}
+
+// Tap-through: a lone tap of a custom trigger key types it, replayed on release.
+static void test_custom_key_tap_types_the_key() {
+  constexpr uint32_t KEY_G = 0x47;
+  Decision d = withTrigger(Trigger::CustomVk, KEY_G);
+  Result r = d.onEvent(kd(KEY_G));
+  CHECK(r.swallow && r.injects.empty());  // held back until we know what it is for
+  CHECK(d.onEvent(kd(KEY_G)).swallow);    // auto-repeat while held back: still waiting
+  r = d.onEvent(ku(KEY_G));
+  CHECK(r.swallow && r.injects.size() == 2);
+  CHECK(injectIs(r.injects[0], InjectKind::KeyDown, Btn::None, KEY_G));
+  CHECK(injectIs(r.injects[1], InjectKind::KeyUp, Btn::None, KEY_G));
+  CHECK(d.state() == S::Idle);
+}
+
+// Tap-through: typing "gh" fast (H down before G up) keeps the order: G is flushed, then H is replayed behind it.
+static void test_custom_key_rollover_keeps_typed_order() {
+  constexpr uint32_t KEY_G = 0x47, KEY_H = 0x48;
+  Decision d = withTrigger(Trigger::CustomVk, KEY_G);
+  CHECK(d.onEvent(kd(KEY_G)).swallow);
+  Result r = d.onEvent(kd(KEY_H));
+  CHECK(r.swallow && r.injects.size() == 2);
+  CHECK(injectIs(r.injects[0], InjectKind::KeyDown, Btn::None, KEY_G));
+  CHECK(injectIs(r.injects[1], InjectKind::KeyDown, Btn::None, KEY_H));
+  CHECK(!d.onEvent(kd(KEY_G)).swallow);  // flushed: G's auto-repeat types
+  r = d.onEvent(ku(KEY_G));
+  CHECK(!r.swallow && r.injects.empty());  // the OS saw G down, so it must see the real up
+  CHECK(!d.onEvent(ku(KEY_H)).swallow);
+  // While G was typing, a click is not a gesture: it belongs to the text the user is in.
+  CHECK(d.onEvent(kd(KEY_G)).swallow);  // a fresh press is held back again
+  d.onEvent(kd(KEY_H));
+  CHECK(!d.onEvent(md(Btn::Left, 0, 0)).swallow);
+  d.onEvent(mu(Btn::Left, 0, 0));
+  d.onEvent(ku(KEY_H));
+  CHECK(!d.onEvent(ku(KEY_G)).swallow);
+}
+
+// Tap-through: Shift pressed while G is held sends g first, so the earlier letter isn't capitalised.
+static void test_custom_key_flushes_before_modifier() {
+  constexpr uint32_t KEY_G = 0x47, LSHIFT = 0xA0;
+  Decision d = withTrigger(Trigger::CustomVk, KEY_G);
+  d.onEvent(kd(KEY_G));
+  Result r = d.onEvent(kd(LSHIFT));
+  CHECK(r.swallow && r.injects.size() == 2);
+  CHECK(injectIs(r.injects[0], InjectKind::KeyDown, Btn::None, KEY_G));
+  CHECK(injectIs(r.injects[1], InjectKind::KeyDown, Btn::None, LSHIFT));
+  CHECK(!d.onEvent(ku(KEY_G)).swallow);
+}
+
+// Tap-through: a drag consumes the held-back key, so nothing is typed on release.
+static void test_custom_key_drag_types_nothing() {
+  constexpr uint32_t KEY_G = 0x47;
+  Decision d = withTrigger(Trigger::CustomVk, KEY_G);
+  d.onEvent(kd(KEY_G));
+  CHECK(d.onEvent(md(Btn::Left, 100, 100)).swallow);
+  CHECK(findEmit(d.onEvent(mv(140, 100)), Emit::Kind::WheelOpen) != nullptr);
+  CHECK(findEmit(d.onEvent(mu(Btn::Left, 140, 100)), Emit::Kind::WheelRelease) != nullptr);
+  Result r = d.onEvent(ku(KEY_G));
+  CHECK(r.swallow && r.injects.empty());
+}
+
+// Caps Lock is not held back: a replayed tap would toggle it.
+static void test_caps_lock_is_not_tapped_through() {
+  Decision d = withTrigger(Trigger::CapsLock);
+  CHECK(d.onEvent(kd(CAPS)).swallow);
+  Result r = d.onEvent(ku(CAPS));
+  CHECK(r.swallow && r.injects.empty());
 }
 
 static void test_mouse4_trigger_drags_with_side_button() {
@@ -730,16 +1158,16 @@ static void test_pause_stops_both_wheels() {
   CHECK(!d.onEvent(mu(Btn::Left, 100, 100)).swallow);
 }
 
-static void test_releasing_emote_trigger_mid_wheel_cancels() {
+static void test_releasing_emote_trigger_mid_wheel_keeps_wheel() {
   Decision d = withEmote();
   openEmoteWheel(d);
   d.onEvent(kd(ALT));  // the other wheel's trigger doesn't touch this gesture
-  CHECK(findEmit(d.onEvent(ku(ALT)), Emit::Kind::Cancel) == nullptr);
+  CHECK(d.onEvent(ku(ALT)).emits.empty());
   CHECK(d.state() == S::Wheel);
-  Result r = d.onEvent(ku(CTRL));
-  CHECK(findEmit(r, Emit::Kind::Cancel) != nullptr);
-  CHECK(d.state() == S::SwallowUp);
-  CHECK(d.onEvent(mu(Btn::Left, 130, 100)).swallow);
+  CHECK(d.onEvent(ku(CTRL)).emits.empty());
+  CHECK(d.state() == S::Wheel);
+  Result r = d.onEvent(mu(Btn::Left, 130, 100));
+  CHECK(r.swallow && emitIs(findEmit(r, Emit::Kind::WheelRelease), WheelKind::Emote));
   CHECK(d.state() == S::Idle);
 }
 
@@ -761,6 +1189,21 @@ static void test_parse_config_emote_fields() {
   CHECK(c.config.emoteTrigger == Trigger::Shift && c.config.emoteTriggerVk == 7 && c.config.emoteClick);
   CHECK(parseCommand(R"({"type":"config","emoteTrigger":"bogus"})", cur).kind == Command::Kind::Invalid);
   CHECK(parseCommand(R"({"type":"config","trigger":"off"})", cur).kind == Command::Kind::Invalid);  // pings always have a trigger
+}
+
+static void test_parse_config_text_hotkey() {
+  const Config cur;
+  const Command c = parseCommand(R"({"type":"config","textMods":9,"textVk":89})", cur);
+  CHECK(c.kind == Command::Kind::Config && c.config.textMods == 9 && c.config.textVk == 89);
+}
+
+static void test_parse_config_panel_key() {
+  const Config cur;
+  CHECK(cur.panelVk == 0 && cur.textVk == 0);
+  const Command c = parseCommand(R"({"type":"config","panelVk":9})", cur);
+  CHECK(c.kind == Command::Kind::Config && c.config.panelVk == 9);
+  const Command keep = parseCommand(R"({"type":"config"})", c.config);
+  CHECK(keep.config.panelVk == 9);
 }
 
 static void test_json_parses_flat_objects() {
@@ -792,6 +1235,12 @@ static void test_format_emit() {
   toggled.enabled = true;
   CHECK(formatEmit(toggled) == R"({"type":"toggled","enabled":true})");
   CHECK(formatEmit(Emit{Emit::Kind::Cancel}) == R"({"type":"cancel"})");
+  CHECK(formatEmit(Emit{Emit::Kind::TextRequested}) == R"({"type":"textRequested"})");
+  Emit panel{Emit::Kind::Panel};
+  panel.show = true;
+  CHECK(formatEmit(panel) == R"({"type":"panel","show":true})");
+  panel.show = false;
+  CHECK(formatEmit(panel) == R"({"type":"panel","show":false})");
 }
 
 static void test_format_emit_includes_wheel() {
@@ -916,6 +1365,8 @@ int main() {
   test_format_emit();
   test_format_emit_includes_wheel();
   test_parse_config_emote_fields();
+  test_parse_config_text_hotkey();
+  test_parse_config_panel_key();
   test_output_never_blocks_producer();
   test_alt_drag_opens_wheel_and_releases();
   test_plain_click_passes_through();
@@ -925,7 +1376,7 @@ int main() {
   test_right_click_cancels_wheel();
   test_right_click_with_alt_but_no_gesture_passes();
   test_escape_cancels_wheel();
-  test_trigger_released_during_wheel_cancels();
+  test_trigger_released_during_wheel_keeps_wheel();
   test_trigger_released_during_pending_replays_click_after_mask();
   test_trigger_released_during_pending_pings_when_click_ping_on();
   test_alt_up_after_gesture_is_masked();
@@ -938,6 +1389,29 @@ int main() {
   test_toggle_hotkey_disables_and_enables();
   test_hotkey_autorepeat_toggles_once();
   test_hotkey_ignored_while_suspended();
+  test_text_hotkey_requests_once();
+  test_text_hotkey_ignored_while_suspended();
+  test_text_hotkey_fires_with_alt_trigger();
+  test_text_hotkey_masks_alt_menu();
+  test_alt_drag_still_opens_wheel_with_text_hotkey();
+  test_text_hotkey_off_when_vk_zero();
+  test_text_hotkey_needs_its_modifier();
+  test_text_hotkey_shares_its_key_with_a_custom_emote_key();
+  test_nothing_is_live_before_the_first_config();
+  test_panel_key_shows_on_press_and_hides_on_release();
+  test_panel_key_with_modifier_passes();
+  test_panel_key_passes_over_fullscreen_game();
+  test_panel_key_passes_when_off_or_paused();
+  test_panel_key_passes_when_it_is_a_wheel_trigger();
+  test_panel_key_up_after_config_change_is_swallowed();
+  test_panel_key_up_while_paused_is_swallowed();
+  test_panel_hides_when_repeats_stop();
+  test_panel_stays_shown_while_another_key_is_pressed();
+  test_panel_repeats_keep_it_shown();
+  test_panel_with_no_repeat_watchdog_stays_shown_through_a_long_hold();
+  test_panel_repeat_gap_is_a_setting();
+  test_release_panel_hides_it_and_keeps_the_up_swallowed();
+  test_text_hotkey_ignored_while_paused();
   test_disabling_mid_drag_cancels_and_swallows_up();
   test_config_change_mid_drag_cancels();
   test_lost_up_recovers_on_next_press();
@@ -953,6 +1427,11 @@ int main() {
   test_ctrl_trigger_ignores_alt();
   test_capslock_trigger_swallows_key();
   test_custom_key_trigger();
+  test_custom_key_tap_types_the_key();
+  test_custom_key_rollover_keeps_typed_order();
+  test_custom_key_flushes_before_modifier();
+  test_custom_key_drag_types_nothing();
+  test_caps_lock_is_not_tapped_through();
   test_mouse4_trigger_drags_with_side_button();
   test_ctrl_drag_opens_emote_wheel();
   test_alt_drag_is_still_the_ping_wheel();
@@ -963,7 +1442,7 @@ int main() {
   test_custom_emote_key_is_swallowed();
   test_mouse5_emote_beside_alt_ping();
   test_pause_stops_both_wheels();
-  test_releasing_emote_trigger_mid_wheel_cancels();
+  test_releasing_emote_trigger_mid_wheel_keeps_wheel();
   test_mask_menu_keys_off_leaves_alt_up_alone();
   test_mac_keycodes_map_to_vks();
   test_mac_modifier_held();

@@ -8,6 +8,7 @@ import { registerSettingsIpc, type SettingsIpcDeps } from '../../src/main/settin
 import { SettingsStore } from '../../src/main/settingsStore';
 import { strings } from '../../src/shared/i18n';
 import { SETTINGS_CH } from '../../src/shared/ipc';
+import { MOD } from '../../src/shared/keys';
 import type { UpdateState } from '../../src/shared/update';
 
 const h = vi.hoisted(() => ({
@@ -55,6 +56,24 @@ function registerWith(update?: SettingsIpcDeps['update']): void {
 }
 
 describe('settings IPC', () => {
+  it('refuses to make the text and enable shortcuts identical', async () => {
+    const result = await call(SETTINGS_CH.set, { textHotkey: store.get().toggleHotkey });
+    expect(result).toMatchObject({ ok: false, error: strings('en').shortcutClash });
+    expect(store.get().textHotkey).toEqual({ mods: MOD.alt, vk: 0x54 });
+  });
+
+  it('refuses a panel key that another shortcut uses', async () => {
+    const result = await call(SETTINGS_CH.set, { panelKey: store.get().toggleHotkey.vk });
+    expect(result).toMatchObject({ ok: false, error: strings('en').panelKeyClash });
+    expect(store.get().panelKey).toBe(0x09);
+  });
+
+  it('refuses a custom emote key that is the panel key', async () => {
+    expect(await call(SETTINGS_CH.set, { panelKey: 0x51 })).toMatchObject({ ok: true });
+    expect(await call(SETTINGS_CH.set, { emoteTrigger: { vk: 0x51 } })).toMatchObject({ ok: false });
+    expect(store.get().emoteTrigger).not.toEqual({ vk: 0x51 });
+  });
+
   it('setSettings ignores customEmotes from the window', async () => {
     const forged = [{ id: `c:${'ab'.repeat(16)}`, name: 'forged', animated: true }];
     const result = await call(SETTINGS_CH.set, { volume: 12, customEmotes: forged });
@@ -102,6 +121,31 @@ describe('settings IPC', () => {
     expect(store.get().emoteWheel[0]).not.toBe(idOf(s));
     expect(store.get().clickEmoteId).not.toBe(idOf(s));
     expect(readdirSync(library.dir)).toEqual([]);
+  });
+
+  it('gives one of our emotes a sound and takes it away again', async () => {
+    const s = still(4);
+    const hash = idOf(s).slice(2);
+    await call(SETTINGS_CH.emoteImport, { name: 'cow', still: s });
+    const sound = new Uint8Array(300).fill(1);
+    sound.set(ascii('OggS'));
+    expect(await call(SETTINGS_CH.emoteSound, idOf(s), sound)).toEqual({ ok: true });
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, sound: true }]);
+    expect(readdirSync(library.dir).sort()).toEqual([`${hash}.sound.ogg`, `${hash}.webp`]);
+    expect(await call(SETTINGS_CH.emoteSound, idOf(s), null)).toEqual({ ok: true });
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false }]);
+    expect(readdirSync(library.dir)).toEqual([`${hash}.webp`]);
+  });
+
+  it('refuses a sound for an emote that is not ours, or that is not sound bytes', async () => {
+    const s = still(5);
+    await call(SETTINGS_CH.emoteImport, { name: 'x', still: s });
+    const sound = new Uint8Array(ascii('OggS'));
+    expect(await call(SETTINGS_CH.emoteSound, `c:${'ab'.repeat(16)}`, sound)).toEqual({ ok: false, error: 'type' });
+    expect(await call(SETTINGS_CH.emoteSound, 'facepalm', sound)).toEqual({ ok: false, error: 'type' });
+    expect(await call(SETTINGS_CH.emoteSound, idOf(s), [1, 2, 3])).toEqual({ ok: false, error: 'type' });
+    expect(await call(SETTINGS_CH.emoteSound, idOf(s), new Uint8Array(300))).toEqual({ ok: false, error: 'type' });
+    expect(store.get().customEmotes[0]).not.toHaveProperty('sound');
   });
 
   it('ignores a removal that is not an imported emote id', async () => {

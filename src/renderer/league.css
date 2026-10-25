@@ -1,0 +1,27 @@
+/* League's own UI art (assets/ui, made by tools/extract-assets --ui), shared by the text box, the room panel, the vote
+   widgets and the overlay's cards. League's fonts are not used: the stacks below are the closest system fonts. */
+:root {
+  --gold-1: #f0e6d2; --gold-2: #cdbe91; --gold-3: #c8aa6e; --gold-4: #785a28; --gold-5: #463714;
+  --grey-1: #a09b8c; --grey-2: #5b5a56; --grey-3: #3c3c41;
+  --teal: #0ac8b9; --hextech: #010a13; --red: #e84057;
+  --serif: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, "Microsoft YaHei UI", "PingFang SC", serif;
+  --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --frame-fill: linear-gradient(#0d2128, #07131a);
+}
+
+/* The in-game options window's frame, cut down to its edges: it stretches to any box. */
+.lol-frame {
+  border: 7px solid transparent; border-image: url("/ui/options-frame.png") 14 / 7px stretch; background: var(--frame-fill) padding-box;
+}
+
+/* The options window's buttons: one image holds the states, 160 x 40 each. */
+.lol-button {
+  height: 30px; padding: 0 14px; border: 0; color: var(--gold-2); font: 600 13px/30px var(--sans); letter-spacing: .02em;
+  background: url("/ui/options-buttons.png") 0 33.333% / 200% 400% no-repeat;
+}
+.lol-button:not(:disabled):hover { background-position: 0 66.667%; color: var(--gold-1); }
+.lol-button:disabled { background-position: 0 0; color: var(--grey-2); }
+
+.lol-scroll::-webkit-scrollbar { width: 6px; }
+.lol-scroll::-webkit-scrollbar-track { background: rgba(1, 10, 19, .6); }
+.lol-scroll::-webkit-scrollbar-thumb { background: var(--gold-4); }

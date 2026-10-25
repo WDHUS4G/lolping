@@ -1,12 +1,12 @@
 import { globalShortcut, ipcMain, shell } from 'electron';
-import { isCustomRef, isEmoteRefShape, type EmoteRef, type ImportResult } from '../shared/emotes';
+import { isCustomRef, isEmoteFx, isEmoteRefShape, type CustomEmote, type EmoteRef, type ImportResult, type SoundResult } from '../shared/emotes';
 import type { Strings } from '../shared/i18n';
 import { SETTINGS_CH, type About, type AppStatus, type SetSettingsResult } from '../shared/ipc';
 import { hotkeyLabel, hotkeyToAccelerator, type Hotkey } from '../shared/keys';
 import { pingById, type PingId } from '../shared/pings';
 import type { Platform } from '../shared/platform';
 import type { JoinResult, RoomState } from '../shared/room';
-import { patchClashes, rendererPatch } from '../shared/settings';
+import { panelKeyClashes, patchClashes, rendererPatch } from '../shared/settings';
 import type { UpdateState } from '../shared/update';
 import { emoteFileFrom, type EmoteLibrary } from './emoteLibrary';
 import type { SettingsStore } from './settingsStore';
@@ -17,7 +17,7 @@ export const LATEST_RELEASE_URL = `${PROJECT_URL}/releases/latest`;
 
 export interface SettingsIpcDeps {
   store: SettingsStore;
-  /** Imported emotes' files. Only the import and remove handlers change `customEmotes`. */
+  /** Imported emotes' files. Only the import, remove, sound and fx handlers change `customEmotes`. */
   library: EmoteLibrary;
   getStatus(): AppStatus;
   setEnabled(on: boolean): void;
@@ -52,6 +52,8 @@ export interface SettingsIpcDeps {
   };
 }
 
+const sameHotkey = (a: Hotkey, b: Hotkey): boolean => a.mods === b.mods && a.vk === b.vk;
+
 /** Returns an error message when another app already owns this shortcut. */
 function hotkeyConflict(next: Hotkey, current: Hotkey, text: Strings, platform: Platform): string | null {
   if (next.mods === current.mods && next.vk === current.vk) return null;
@@ -78,11 +80,24 @@ export function registerSettingsIpc(d: SettingsIpcDeps): void {
   ipcMain.handle(SETTINGS_CH.get, () => d.store.get());
   ipcMain.handle(SETTINGS_CH.set, (_e, raw: unknown): SetSettingsResult => {
     const patch = rendererPatch(raw);
+    if (panelKeyClashes(d.store.get(), patch, d.platform)) {
+      return { ok: false, error: d.text().panelKeyClash, settings: d.store.get() };
+    }
     if (patchClashes(d.store.get(), patch, d.platform)) {
       return { ok: false, error: d.text().emoteKeyClash, settings: d.store.get() };
     }
     if (patch.toggleHotkey) {
+      if (sameHotkey(patch.toggleHotkey, patch.textHotkey ?? d.store.get().textHotkey)) {
+        return { ok: false, error: d.text().shortcutClash, settings: d.store.get() };
+      }
       const error = hotkeyConflict(patch.toggleHotkey, d.store.get().toggleHotkey, d.text(), d.platform);
+      if (error) return { ok: false, error, settings: d.store.get() };
+    }
+    if (patch.textHotkey) {
+      if (sameHotkey(patch.textHotkey, patch.toggleHotkey ?? d.store.get().toggleHotkey)) {
+        return { ok: false, error: d.text().shortcutClash, settings: d.store.get() };
+      }
+      const error = hotkeyConflict(patch.textHotkey, d.store.get().textHotkey, d.text(), d.platform);
       if (error) return { ok: false, error, settings: d.store.get() };
     }
     return { ok: true, settings: d.store.update(patch) };
@@ -110,6 +125,20 @@ export function registerSettingsIpc(d: SettingsIpcDeps): void {
     // Normalising the shorter list puts each wheel slot (and the click emote) that used it back to a default.
     d.store.update({ customEmotes: d.store.get().customEmotes.filter((c) => c.id !== id) });
   }));
+  ipcMain.handle(SETTINGS_CH.emoteSound, (_e, id: unknown, raw: unknown) => oneAtATime(async (): Promise<SoundResult> => {
+    if (!isCustomRef(id) || !d.store.get().customEmotes.some((c) => c.id === id)) return { ok: false, error: 'type' };
+    if (raw !== null && !(raw instanceof Uint8Array)) return { ok: false, error: 'type' };
+    const error = await d.library.setSound(id, raw);
+    if (error) return { ok: false, error };
+    const withSound = ({ sound: _old, ...c }: CustomEmote): CustomEmote => (raw === null ? c : { ...c, sound: true });
+    d.store.update({ customEmotes: d.store.get().customEmotes.map((c) => (c.id === id ? withSound(c) : c)) });
+    return { ok: true };
+  }));
+  ipcMain.handle(SETTINGS_CH.emoteFx, (_e, id: unknown, fx: unknown) => {
+    // undefined is a choice too: it puts the emote back to the plain pop.
+    if (!isCustomRef(id) || !(fx === undefined || isEmoteFx(fx))) return;
+    d.store.update({ customEmotes: d.store.get().customEmotes.map((c) => (c.id === id ? { ...c, fx } : c)) });
+  });
   ipcMain.handle(SETTINGS_CH.about, () => d.about());
   ipcMain.handle(SETTINGS_CH.openFolder, async () => {
     await shell.openPath(d.store.dir);

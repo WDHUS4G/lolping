@@ -1,6 +1,7 @@
-import { DEFAULT_CLICK_EMOTE, EMOTE_CATALOG } from '../../shared/emoteCatalog';
+import { EMOTE_CATALOG } from '../../shared/emoteCatalog';
 import {
-  allEmoteAssetFiles, catalogEmote, customAnimUrl, customHash, customStillUrl, emoteIconUrl, emoteSoundUrl, isBundledEmote,
+  CUSTOM_EMOTE_URL, allEmoteAssetFiles, catalogEmote, customAnimUrl, customHash, customSoundUrl, customStillUrl, emoteSoundUrl,
+  isBundledEmote,
   type EmoteArt, type EmoteRef,
 } from '../../shared/emotes';
 import {
@@ -8,15 +9,19 @@ import {
 } from '../../shared/pings';
 import type { PingTag } from '../../shared/ipc';
 import type { WheelKind } from '../../shared/protocol';
-import { DEFAULT_SETTINGS, overlaySettings, type OverlaySettings } from '../../shared/settings';
-import { EmoteStage } from './emoteFx';
+import { DEFAULT_SETTINGS, overlaySettings, soundLevel, type OverlaySettings } from '../../shared/settings';
+import '../shared/emoteFx.css';
+import { EmoteStage } from './emoteStage';
 import { spawnPing } from './pingFx';
 import { SoundBank } from './soundBank';
 import { showToast } from './toast';
-import { Wheel, type WheelItem } from './wheel';
+import { TextStage } from './textFx';
+import { Wheel } from './wheel';
+import { centerIcons, emoteItem, pingItem } from './wheelItems';
 
 const pingLayer = document.getElementById('pings') as HTMLElement;
 const toastLayer = document.getElementById('toasts') as HTMLElement;
+const textLayer = document.getElementById('texts') as HTMLElement;
 const pingSvg = document.getElementById('wheel') as unknown as SVGSVGElement;
 
 // The emote wheel is a second copy of the ping wheel's svg, and its emotes get a layer of their own above the pings.
@@ -29,49 +34,62 @@ pingLayer.after(emoteLayer);
 
 const sounds = new SoundBank();
 const stage = new EmoteStage(emoteLayer);
+const texts = new TextStage(textLayer);
 let settings: OverlaySettings = overlaySettings(DEFAULT_SETTINGS);
 const [fallbackPing] = pingsFor([DEFAULT_CLICK_PING]);
-const volume = (): number => (settings.muted ? 0 : settings.volume / 100);
+const volume = (): number => soundLevel(settings);
 
 const tick = (): void => {
   if (settings.tickSound) sounds.play(TICK_SOUND, volume() * 0.5);
 };
-const pingWheel = new Wheel(pingSvg, 'PING', textureUrl('generic_ping'), tick);
-const emoteWheel = new Wheel(emoteSvg, 'EMOTE', emoteIconUrl(DEFAULT_CLICK_EMOTE), tick);
+const centers = centerIcons(settings);
+const pingWheel = new Wheel(pingSvg, 'PING', centers.ping, tick);
+const emoteWheel = new Wheel(emoteSvg, 'EMOTE', centers.emote, tick);
 
-const pingItem = (p: PingDef): WheelItem => ({ key: p.id, icon: textureUrl(p.icon) });
-
-/** A wheel slot's icon: the bundled emote's, the imported emote's still, or the generic ping for one that isn't known. */
-function emoteItem(ref: EmoteRef): WheelItem {
-  if (catalogEmote(ref)) return { key: ref, icon: emoteIconUrl(ref) };
-  if (settings.customEmotes.some((c) => c.id === ref)) return { key: ref, icon: customStillUrl(customHash(ref)) };
-  return { key: ref, icon: textureUrl('generic_ping') };
-}
-
-/** This machine's own emotes: the settings know what an imported one looks like, and whether it moves. */
+/** This machine's own emotes: the settings know what an imported one looks like, whether it moves and has a sound. */
 function localArt(ref: EmoteRef): EmoteArt {
   if (isBundledEmote(ref)) return { kind: 'bundled', slug: ref };
   const custom = settings.customEmotes.find((c) => c.id === ref);
   if (!custom) return { kind: 'placeholder' };
   const hash = customHash(ref);
-  return { kind: 'custom', url: custom.animated ? customAnimUrl(hash) : customStillUrl(hash), animated: custom.animated };
+  const sound = custom.sound ? { sound: customSoundUrl(hash) } : {};
+  return { kind: 'custom', url: custom.animated ? customAnimUrl(hash) : customStillUrl(hash), animated: custom.animated, ...sound, fx: custom.fx ?? 0 };
+}
+
+/** Our newest ping on this display while "Keep my last ping on screen" is on. */
+let keptPing: HTMLElement | null = null;
+
+function dropKeptPing(): void {
+  keptPing?.remove();
+  keptPing = null;
 }
 
 function applySettings(s: OverlaySettings): void {
   settings = s;
+  sounds.forget(CUSTOM_EMOTE_URL); // an imported emote's sound may have been replaced: load it again when it next plays
+  if (!s.keepLastPing) dropKeptPing();
+  pingWheel.setSize(s.wheelSizePx);
+  emoteWheel.setSize(s.wheelSizePx);
   pingWheel.setItems(pingsFor(s.wheel).map(pingItem));
-  emoteWheel.setItems(s.emoteWheel.map(emoteItem));
+  emoteWheel.setItems(s.emoteWheel.map((ref) => emoteItem(ref, s.customEmotes)));
+  const { ping, emote } = centerIcons(s);
+  pingWheel.setCenterIcon(ping);
+  emoteWheel.setCenterIcon(emote);
 }
 applySettings(settings);
 
-function ping(def: PingDef, x: number, y: number, tag?: PingTag): void {
-  spawnPing(pingLayer, def, x, y, { sizePx: settings.pingSizePx, durationS: settings.pingDurationS, tag });
+function ping(def: PingDef, x: number, y: number, tag?: PingTag, keep = false): void {
+  if (keep) dropKeptPing();
+  const el = spawnPing(pingLayer, def, x, y, { sizePx: settings.pingSizePx, durationS: settings.pingDurationS, tag, keep });
+  if (keep) keptPing = el;
   sounds.play(def.sound, volume());
 }
 
 function emote(owner: string, art: EmoteArt, x: number, y: number, tag?: PingTag): void {
   stage.spawn(owner, art, x, y, { sizePx: settings.emoteSizePx, tag });
-  if (art.kind === 'bundled' && catalogEmote(art.slug)?.hasSound && settings.emoteSound) sounds.play(`emote:${art.slug}`, volume());
+  if (!settings.emoteSound) return;
+  if (art.kind === 'bundled' && catalogEmote(art.slug)?.hasSound) sounds.play(`emote:${art.slug}`, volume());
+  if (art.kind === 'custom' && art.sound) void sounds.playUrl(art.sound, volume());
 }
 
 const wheelOf = (p: { wheel?: WheelKind }): Wheel => (p.wheel === 'emote' ? emoteWheel : pingWheel);
@@ -87,7 +105,7 @@ window.overlay.on('wheel:release', (p) => {
     window.overlay.reportEmote(chosen.key, chosen.x, chosen.y);
   } else {
     const def = pingById(chosen.key) ?? fallbackPing;
-    ping(def, chosen.x, chosen.y);
+    ping(def, chosen.x, chosen.y, undefined, settings.keepLastPing);
     window.overlay.reportPing(def.id, chosen.x, chosen.y);
   }
 });
@@ -95,10 +113,12 @@ window.overlay.on('wheel:cancel', () => {
   pingWheel.cancel();
   emoteWheel.cancel();
 });
-window.overlay.on('ping:spawn', (p) => ping(pingById(p.id) ?? fallbackPing, p.x, p.y, p.tag));
+window.overlay.on('ping:spawn', (p) => ping(pingById(p.id) ?? fallbackPing, p.x, p.y, p.tag, p.keep === true));
+window.overlay.on('ping:unkeep', dropKeptPing);
 window.overlay.on('emote:spawn', (p) => emote(p.owner, p.art, p.x, p.y, p.tag));
 window.overlay.on('emote:clear', (p) => stage.clear(p.owner));
 window.overlay.on('toast:show', (t) => showToast(toastLayer, t.title, t.body));
+window.overlay.on('text:spawn', (t) => texts.spawn(t));
 
 /** Resolves with `label` when the image at `url` doesn't load. */
 const probe = (url: string, label: string): Promise<string | null> =>
@@ -134,6 +154,9 @@ const soundEntries = [
 ];
 // About lists a missing file by its place in assets/ ("sounds/x.wav", "emotes/y.ogg"), not by the URL this page used.
 const assetName = (url: string): string => url.replace(/^(?:\.{1,2}\/)+/, '');
+
+// The same startup warm the sounds and sheets get: without it, the first ornamented emote pays for the glow
+// sprites' decode and shader compile mid-gesture.
 
 void Promise.all([sounds.load(soundEntries), checkImages()]).then(([missingSounds, missingImages]) => {
   const missing = [...missingSounds.map(assetName), ...missingImages];

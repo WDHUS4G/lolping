@@ -3,12 +3,13 @@ import { join } from 'node:path';
 import { platformOf, type Platform } from '../shared/platform';
 import { APP_SCHEME } from './appProtocol';
 
-export type Page = 'overlay' | 'settings';
+export type Page = 'overlay' | 'settings' | 'text' | 'panel';
 
 export const PLATFORM: Platform = platformOf(process.platform);
 export const IS_MAC = PLATFORM === 'mac';
+export const IS_LINUX = PLATFORM === 'linux';
 
-const HELPER_FILE = IS_MAC ? 'hook-helper' : 'hook-helper.exe';
+const HELPER_FILE = PLATFORM === 'win' ? 'hook-helper.exe' : 'hook-helper';
 
 export const helperExePath = (): string =>
   app.isPackaged

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { physicalToDip, physicalToLocal, type DisplayMap } from '../../src/main/coords';
+import { physicalToDip, physicalToLocal, placeInside, type DisplayMap } from '../../src/main/coords';
 
 // Ultrawide primary at 100% + a 1080p monitor at 150% to its right + a 1440p monitor at 125% to its left.
 const A: DisplayMap = { id: 1, scale: 1, dip: { x: 0, y: 0, width: 3440, height: 1440 }, phys: { x: 0, y: 0, width: 3440, height: 1440 } };
@@ -33,5 +33,26 @@ describe('coords', () => {
   it('returns null with no displays or an unknown target', () => {
     expect(physicalToLocal(0, 0, [])).toBeNull();
     expect(physicalToLocal(0, 0, maps, 99)).toBeNull();
+  });
+});
+
+describe('placeInside', () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+  const box = { width: 420, height: 64 };
+
+  it('keeps the wanted corner when the box fits', () => {
+    expect(placeInside({ x: 100, y: 200 }, box, area)).toEqual({ x: 100, y: 200 });
+  });
+
+  it('pulls a box that would run off the right and bottom edges back in', () => {
+    expect(placeInside({ x: 1900, y: 1030 }, box, area)).toEqual({ x: 1500, y: 976 });
+  });
+
+  it('pulls a box that starts left of or above the area onto its edge', () => {
+    expect(placeInside({ x: -50, y: -5 }, box, { ...area, x: 0, y: 0 })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('works on a display that sits left of the primary', () => {
+    expect(placeInside({ x: -100, y: 500 }, box, { x: -1920, y: 0, width: 1920, height: 1080 })).toEqual({ x: -420, y: 500 });
   });
 });

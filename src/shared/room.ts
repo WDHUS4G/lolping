@@ -1,3 +1,4 @@
+import type { TagRgb } from './roomColors';
 import type { MemberStatus } from './roomProtocol';
 
 export type TransportStatus = 'off' | 'starting' | 'ok' | 'unavailable';
@@ -6,13 +7,21 @@ export type MemberPath = 'lan' | 'internet' | 'connecting' | 'unreachable';
 export interface RoomMember {
   peer: string;
   name: string;
-  /** Index into TAG_COLORS. */
+  /** Index into TAG_COLORS. Also what an older app shows when `rgb` is set: it never sees the exact colour. */
   color: number;
+  /** The member's custom tag colour, already clamped for readability, or null when it uses the palette entry. */
+  rgb: TagRgb | null;
   path: MemberPath;
   status: MemberStatus;
   needsUpdate: boolean;
   /** An app older than 0.5.0: it can't show our emotes. */
   noEmotes: boolean;
+  /** An app older than ROOM_CHAT_SINCE: it can't show our text, alive lines or votes. */
+  noChat: boolean;
+  /** They switched room text off: nothing to send them, and nothing from them. */
+  textOff: boolean;
+  /** They switched room votes off. */
+  votesOff: boolean;
   /** Muted by us, for this session. */
   muted: boolean;
   self: boolean;

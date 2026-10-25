@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { open, seal, type RoomKeys } from '../../src/main/roomCrypto';
-import { RoomManager, type RemoteEmote, type RemotePing, type RoomToast } from '../../src/main/roomManager';
+import {
+  makeIdentity, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
+} from '../../src/main/roomCrypto';
+import {
+  MAX_MEMBERS, RoomManager, type RemoteEmote, type RemotePing, type RemoteText, type RoomToast,
+} from '../../src/main/roomManager';
 import { formatRoomCode, makeRoomCode } from '../../src/shared/roomCode';
-import { decodeMessage, encodeMessage, type RoomMessage } from '../../src/shared/roomProtocol';
+import type { TagRgb } from '../../src/shared/roomColors';
+import {
+  decodeMessage, decodeSigned, encodeMessage, joinSigned, type BallotMsg, type RoomFeatureOff, type RoomMessage, type VoteMsg,
+} from '../../src/shared/roomProtocol';
 import { FakeTransport } from './fixtures/fakeTransport';
 
 const KEYS: RoomKeys = { msgKey: Buffer.alloc(32, 1), relayTopic: 'room' };
 const CODE = makeRoomCode(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9]));
-const SELF = 'abababababababab';
+const SELF = peerIdOf(makeIdentity(new Uint8Array(32).fill(0xab)).pk);
 
 /** Another lolPing in the room, sending through the fake transport. */
 class Remote {
@@ -25,16 +32,51 @@ class Remote {
   emote(extra: Record<string, unknown> = {}): void {
     this.lan.deliver(this.key, this.packet({ t: 'emote', e: 'gg', d: 1, x: 0.5, y: 0.25, ...extra }));
   }
+  text(extra: Record<string, unknown> = {}): void {
+    this.lan.deliver(this.key, this.packet({ t: 'text', text: 'push mid', d: 1, x: 0.5, y: 0.25, ...extra }));
+  }
+  alive(extra: Record<string, unknown> = {}): void {
+    this.lan.deliver(this.key, this.packet({ t: 'alive', who: this.peer, d: 1, x: 0.5, y: 0.25, ...extra }));
+  }
+  vote(extra: Record<string, unknown> = {}): void {
+    this.lan.deliver(this.key, this.packet({ t: 'vote', id: '0a1b2c3d', kind: 'ff', ...extra }));
+  }
+  ballot(extra: Record<string, unknown> = {}): void {
+    this.lan.deliver(this.key, this.packet({ t: 'ballot', id: '0a1b2c3d', yes: true, ...extra }));
+  }
   bye(): void {
     this.lan.deliver(this.key, this.packet({ t: 'bye' }));
   }
 }
 
+/** A 0.5.2 lolPing: its id is its key's hash, its presence carries the key, and everything but a chunk is signed. */
+class SignedRemote extends Remote {
+  readonly id: RoomIdentity;
+  constructor(seed: number, key: string, lan: FakeTransport) {
+    const id = makeIdentity(new Uint8Array(32).fill(seed));
+    super(peerIdOf(id.pk), key, lan);
+    this.id = id;
+  }
+  override packet(m: Record<string, unknown>, key = KEYS.msgKey, signer: RoomIdentity = this.id): Buffer {
+    const extra = m.t === 'presence' ? { pk: this.id.pk.toString('base64') } : {};
+    const body = encodeMessage({ peer: this.peer, seq: ++this.seq, ts: Date.now(), ...m, ...extra } as RoomMessage);
+    if (m.t === 'chunk') return seal(key, body);
+    const text = new TextDecoder().decode(body);
+    return seal(key, new TextEncoder().encode(joinSigned(text, signBody(signer, body))));
+  }
+}
+
+/** An unsigned packet claiming to be from `peer`, as a hostile member (or a 0.5.1 app) could send. */
+function forged(peer: string, m: Record<string, unknown>, seq = 1): Buffer {
+  return seal(KEYS.msgKey, encodeMessage({ peer, seq, ts: Date.now(), ...m } as RoomMessage));
+}
+
 let lan: FakeTransport;
 let room: RoomManager;
-let profile: { name: string; color: number; limit: number };
+let profile: { name: string; color: number; rgb: TagRgb | null; limit: number; nf: RoomFeatureOff[] };
 let pings: RemotePing[];
 let emotes: RemoteEmote[];
+let texts: RemoteText[];
 let toasts: RoomToast[];
 let saved: (string | null)[];
 
@@ -52,9 +94,10 @@ async function joinActive(): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers({ now: 1_780_000_000_000 });
   lan = new FakeTransport('lan');
-  profile = { name: 'Me', color: 1, limit: 5 };
+  profile = { name: 'Me', color: 1, rgb: null, limit: 5, nf: [] };
   pings = [];
   emotes = [];
+  texts = [];
   toasts = [];
   saved = [];
   room = new RoomManager({
@@ -65,9 +108,11 @@ beforeEach(() => {
     appVersion: '0.3.0',
     profile: () => profile,
     resolveTarget: (d) => (d === 1 ? { displayId: 100, width: 1920, height: 1080 } : null),
+    announceEmotes: () => [],
   });
   room.on('remotePing', (p: RemotePing) => pings.push(p));
   room.on('remoteEmote', (p: RemoteEmote) => emotes.push(p));
+  room.on('remoteText', (p: RemoteText) => texts.push(p));
   room.on('toast', (t: RoomToast) => toasts.push(t));
   room.on('saveCode', (c: string | null) => saved.push(c));
 });
@@ -99,9 +144,11 @@ describe('joining', () => {
     expect(room.state().phase).toBe('idle');
   });
 
-  it('leaves a room that already has 8 other members', async () => {
+  it(`leaves a room that already has ${MAX_MEMBERS} other members`, async () => {
     await room.join(CODE);
-    for (let i = 0; i < 8; i++) new Remote(`${i}`.repeat(16), `lan:10.0.0.${i}:47474`, lan).presence();
+    for (let i = 0; i < MAX_MEMBERS; i++) {
+      new Remote(i.toString(16).repeat(16), `lan:10.0.0.${i}:47474`, lan).presence();
+    }
     await vi.advanceTimersByTimeAsync(3000);
     expect(room.state().phase).toBe('idle');
     expect(toasts).toEqual([{ kind: 'full' }]);
@@ -202,7 +249,7 @@ describe('members', () => {
 
   /** A presence sealed with the room key but stamped an hour ago: a captured packet replayed later, or a bad clock. */
   const stalePresence = (r: Remote, name = 'Old') => lan.deliver(r.key, seal(KEYS.msgKey, encodeMessage({
-    t: 'presence', peer: r.peer, seq: ++r.seq, ts: Date.now() - 3_600_000, proto: 1, app: '1', name, color: 0, status: 'on',
+    t: 'presence', peer: r.peer, seq: ++r.seq, ts: Date.now() - 3_600_000, proto: 1, app: '1', name, color: 0, status: 'on', em: [], nf: [],
   })));
 
   it('never adds, answers or counts a member from stale packets, so replays cannot fill the room', async () => {
@@ -250,7 +297,7 @@ describe('incoming pings', () => {
 
   it('maps a ping onto the target display with the sender’s tag', () => {
     alex.ping({ ping: 'push', x: 0.5, y: 0.25 });
-    expect(pings).toEqual([{ displayId: 100, x: 960, y: 270, id: 'push', tag: { name: 'Alex', color: 4 } }]);
+    expect(pings).toEqual([{ displayId: 100, x: 960, y: 270, id: 'push', tag: { name: 'Alex', color: 4, rgb: null } }]);
   });
 
   it('shows a packet that arrives twice only once', () => {
@@ -306,7 +353,7 @@ describe('incoming emotes', () => {
 
   it('emits remote emotes with the sender’s tag, mapped onto the target display', () => {
     alex.emote({ e: 'gg', d: 1, x: 0.5, y: 0.25 });
-    expect(emotes).toEqual([{ displayId: 100, x: 960, y: 270, ref: 'gg', peer: alex.peer, tag: { name: 'Pa', color: 2 } }]);
+    expect(emotes).toEqual([{ displayId: 100, x: 960, y: 270, ref: 'gg', peer: alex.peer, tag: { name: 'Pa', color: 2, rgb: null } }]);
     expect(pings).toHaveLength(0);
   });
 
@@ -315,6 +362,13 @@ describe('incoming emotes', () => {
     alex.emote({ e: custom });
     alex.emote({ e: 'from_the_future' });
     expect(emotes.map((e) => e.ref)).toEqual([custom, 'from_the_future']);
+  });
+
+  it('carries the sender’s effect on the emote, and nothing when they left it out', () => {
+    alex.emote({ fx: 5 });
+    alex.emote({ fx: 6 }); // out of range: dropped, not the emote
+    alex.emote({});
+    expect(emotes.map((e) => e.fx)).toEqual([5, undefined, undefined]);
   });
 
   it('keeps an emote at the very edge of the display inside it', () => {
@@ -375,6 +429,10 @@ describe('outgoing', () => {
     room.sendEmote('gg', { d: 1, x: 0.1, y: 0.2 });
     expect(lan.sent.map((s) => s.to).sort()).toEqual(['lan:a', 'lan:b']);
     expect(sentMessages('lan:a')[0]).toMatchObject({ t: 'emote', e: 'gg', d: 1, x: 0.1, y: 0.2, peer: SELF });
+    expect(sentMessages('lan:a')[0]).not.toHaveProperty('fx'); // the plain pop leaves the field out
+    lan.sent = [];
+    room.sendEmote('gg', { d: 1, x: 0.1, y: 0.2 }, 5);
+    expect(sentMessages('lan:a')[0]).toMatchObject({ t: 'emote', e: 'gg', fx: 5, peer: SELF });
     room.setStatusFlags({ paused: true, roomMuted: false });
     lan.sent = [];
     room.sendEmote('gg', { d: 1, x: 0.1, y: 0.2 });
@@ -466,7 +524,7 @@ describe('outgoing', () => {
     let n = 0;
     const fresh = new RoomManager({
       transports: [lan], now: () => Date.now(), randomBytes: (k) => Uint8Array.from({ length: k }, () => ++n & 255),
-      deriveKeys: async () => KEYS, appVersion: '0.3.0', profile: () => profile, resolveTarget: () => null,
+      deriveKeys: async () => KEYS, appVersion: '0.3.0', profile: () => profile, resolveTarget: () => null, announceEmotes: () => [],
     });
     await fresh.join(CODE);
     const first = sentMessages('*').at(-1)!;
@@ -482,7 +540,7 @@ describe('outgoing', () => {
   it('goes back to idle and reports failure when the keys cannot be derived', async () => {
     const broken = new RoomManager({
       transports: [lan], now: () => Date.now(), randomBytes: (k) => new Uint8Array(k), appVersion: '0.3.0',
-      deriveKeys: async () => { throw new Error('out of memory'); }, profile: () => profile, resolveTarget: () => null,
+      deriveKeys: async () => { throw new Error('out of memory'); }, profile: () => profile, resolveTarget: () => null, announceEmotes: () => [],
     });
     expect(await broken.join(CODE)).toEqual({ ok: false, error: 'failed' });
     expect(broken.state().phase).toBe('idle');
@@ -512,6 +570,7 @@ describe('two transports', () => {
       transports: [lan, net], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xcd),
       deriveKeys: async () => KEYS, appVersion: '0.3.0', profile: () => profile,
       resolveTarget: () => ({ displayId: 1, width: 100, height: 100 }),
+      announceEmotes: () => [],
     });
     both.on('remotePing', (p: RemotePing) => got.push(p));
     await both.join(CODE);
@@ -565,6 +624,7 @@ describe('internet over a shared transport', () => {
       transports, now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xef),
       deriveKeys: async () => KEYS, appVersion: '0.4.0', profile: () => profile,
       resolveTarget: () => ({ displayId: 1, width: 100, height: 100 }),
+      announceEmotes: () => [],
     });
     r.on('toast', (t: RoomToast) => gone.push(t));
     return r;
@@ -766,3 +826,450 @@ describe('internet over a shared transport', () => {
   });
 });
 
+
+describe('emote transfers', () => {
+  let emotes: { peer: string; hashes: string[] }[];
+  let wants: RoomMessage[];
+  let chunks: RoomMessage[];
+  const hash = '0123456789abcdef0123456789abcdef';
+
+  /** The room under test, with the self peer id pinned so `want` addressing can be asserted. */
+  const make = (): RoomManager => {
+    const r = new RoomManager({
+      transports: [lan], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xab),
+      deriveKeys: async () => KEYS, appVersion: '0.5.1', profile: () => profile,
+      resolveTarget: (d) => (d === 1 ? { displayId: 100, width: 1920, height: 1080 } : null),
+      announceEmotes: () => [hash],
+    });
+    r.on('emotes', (peer: string, hashes: string[]) => emotes.push({ peer, hashes }));
+    r.on('want', (w: RoomMessage) => wants.push(w));
+    r.on('chunk', (c: RoomMessage) => chunks.push(c));
+    return r;
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: 1_780_000_000_000 });
+    lan = new FakeTransport('lan');
+    emotes = [];
+    wants = [];
+    chunks = [];
+    room = make();
+    pings = [];
+    emotes = [];
+    toasts = [];
+    saved = [];
+  });
+
+  afterEach(() => {
+    room.quit();
+    vi.useRealTimers();
+  });
+
+  it('announces our wheel hashes in every presence, and reads a member’s announcements', async () => {
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ em: [hash] });
+    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash] });
+    const mine = sentMessages('lan:a').find((m) => m.t === 'presence');
+    expect(mine).toMatchObject({ em: [hash] });
+  });
+
+  it('hands a want addressed to us to the transfer layer, and drops one aimed elsewhere', async () => {
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence();
+    lan.sent = [];
+    lan.deliver(alex.key, alex.packet({ t: 'want', to: room.self, h: hash, need: [] }));
+    lan.deliver(alex.key, alex.packet({ t: 'want', to: '9999999999999999', h: hash, need: [] }));
+    expect(wants).toHaveLength(1);
+    expect(wants[0]).toMatchObject({ t: 'want', to: room.self });
+  });
+
+  it('hands a chunk over, but nothing at all from a muted member', async () => {
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence();
+    lan.sent = [];
+    lan.deliver(alex.key, alex.packet({ t: 'chunk', h: hash, i: 0, n: 2, b: 'QQ==' }));
+    expect(chunks).toHaveLength(1);
+    room.muteMember('1111111111111111', true);
+    lan.deliver(alex.key, alex.packet({ t: 'chunk', h: hash, i: 1, n: 2, b: 'QQ==' }));
+    lan.deliver(alex.key, alex.packet({ t: 'want', to: room.self, h: hash, need: [] }));
+    expect(chunks).toHaveLength(1);
+    expect(wants).toHaveLength(0);
+  });
+
+  it('spends shared tokens on chunks only while five stay for pings', async () => {
+    await joinActive();
+    new Remote('1111111111111111', 'lan:a', lan).presence();
+    const spent: boolean[] = [];
+    for (let n = 0; n < 7; n++) spent.push(room.spareSharedToken(5));
+    expect(spent).toEqual([true, true, true, true, true, false, false]);
+    // a ping still goes out afterwards: the bucket kept its burst
+    lan.sent = [];
+    room.sendPing('omw', { d: 1, x: 0.5, y: 0.5 });
+    expect(sentMessages()).toHaveLength(1);
+  });
+
+  it('tells the transfer layer when a member is gone, including on quit', async () => {
+    await joinActive();
+    const gonePeers: string[] = [];
+    room.on('memberGone', (peer: string) => gonePeers.push(peer));
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence();
+    alex.bye();
+    expect(gonePeers).toEqual(['1111111111111111']);
+    const ben = new Remote('2222222222222222', 'lan:b', lan);
+    ben.presence();
+    room.quit();
+    expect(gonePeers).toEqual(['1111111111111111', '2222222222222222']);
+  });
+});
+
+describe('emote transfer gating (audit regressions)', () => {
+  const hash = '0123456789abcdef0123456789abcdef';
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: 1_780_000_000_000 });
+    lan = new FakeTransport('lan');
+    pings = [];
+    emotes = [];
+    toasts = [];
+    saved = [];
+    room = new RoomManager({
+      transports: [lan], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xab),
+      deriveKeys: async () => KEYS, appVersion: '0.5.2', profile: () => profile,
+      resolveTarget: (d) => (d === 1 ? { displayId: 100, width: 1920, height: 1080 } : null),
+      announceEmotes: () => [],
+    });
+  });
+
+  afterEach(() => {
+    room.quit();
+    vi.useRealTimers();
+  });
+
+  it('ignores new members once the room is full, however many presences arrive', async () => {
+    await joinActive();
+    for (let n = 0; n < MAX_MEMBERS + 4; n++) new Remote(n.toString(16).padStart(16, '0'), `lan:${n}`, lan).presence();
+    expect(room.state().members).toHaveLength(MAX_MEMBERS); // we count too: the room never grows past MAX_MEMBERS people
+  });
+
+  it('lets at most two members share one LAN address', async () => {
+    await joinActive();
+    new Remote('1111111111111111', 'lan:same', lan).presence();
+    new Remote('2222222222222222', 'lan:same', lan).presence();
+    new Remote('3333333333333333', 'lan:same', lan).presence(); // a rebound is fine, a third is forgery
+    new Remote('4444444444444444', 'lan:other', lan).presence();
+    expect(room.state().members.filter((m) => !m.self)).toHaveLength(3);
+  });
+
+  it('counts want and chunk messages against their own per-member bucket', async () => {
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence();
+    const seen: RoomMessage[] = [];
+    room.on('want', (w: RoomMessage) => seen.push(w));
+    room.on('chunk', (c: RoomMessage) => seen.push(c));
+    for (let n = 0; n < 100; n++) lan.deliver(alex.key, alex.packet({ t: 'want', to: room.self, h: hash, need: [] }));
+    expect(seen).toHaveLength(60); // the first sixty pass, the flood behind them meets the wall
+    await vi.advanceTimersByTimeAsync(1000);
+    lan.deliver(alex.key, alex.packet({ t: 'want', to: room.self, h: hash, need: [] }));
+    expect(seen).toHaveLength(61); // the bucket refills for a well-behaved sender
+  });
+
+  it('neither fetches nor serves stills while paused, and resumes on the next presence', async () => {
+    await joinActive();
+    const seen: RoomMessage[] = [];
+    let announced: { peer: string; hashes: string[] }[] = [];
+    room.on('want', (w: RoomMessage) => seen.push(w));
+    room.on('chunk', (c: RoomMessage) => seen.push(c));
+    room.on('emotes', (peer: string, hashes: string[]) => announced.push({ peer, hashes }));
+    room.setStatusFlags({ paused: true, roomMuted: false });
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ em: [hash] });
+    lan.deliver(alex.key, alex.packet({ t: 'want', to: room.self, h: hash, need: [] }));
+    lan.deliver(alex.key, alex.packet({ t: 'chunk', h: hash, i: 0, n: 2, b: 'QQ==' }));
+    expect(seen).toHaveLength(0);
+    expect(announced).toHaveLength(0); // no prefetch either: the transfer layer hears nothing
+
+    room.setStatusFlags({ paused: false, roomMuted: false });
+    alex.presence({ em: [hash] });
+    expect(announced).toHaveLength(1); // the next presence after unpausing starts prefetch again
+  });
+});
+
+describe('room text and votes', () => {
+  let alex: Remote;
+  let votes: VoteMsg[];
+  let ballots: BallotMsg[];
+  beforeEach(async () => {
+    votes = [];
+    ballots = [];
+    room.on('vote', (m: VoteMsg) => votes.push(m));
+    room.on('ballot', (m: BallotMsg) => ballots.push(m));
+    await joinActive();
+    alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ name: 'Alex', color: 4, app: '0.5.2' });
+  });
+
+  it('passes text and alive through the ping gates', () => {
+    alex.text({ x: 0.5, y: 0.25 });
+    alex.alive({ who: room.self, x: 0.25, y: 0.5 });
+    const tag = { name: 'Alex', color: 4, rgb: null };
+    expect(texts).toEqual([
+      { kind: 'text', peer: alex.peer, tag, displayId: 100, x: 960, y: 270, text: 'push mid' },
+      { kind: 'alive', peer: alex.peer, tag, displayId: 100, x: 480, y: 540, who: room.self },
+    ]);
+    texts.length = 0;
+    new Remote('2222222222222222', 'lan:c', lan).text(); // a stranger
+    room.setStatusFlags({ paused: true, roomMuted: false });
+    alex.text();
+    alex.alive();
+    room.setStatusFlags({ paused: false, roomMuted: true });
+    alex.text();
+    room.setStatusFlags({ paused: false, roomMuted: false });
+    room.muteMember(alex.peer, true);
+    alex.text();
+    alex.alive();
+    room.muteMember(alex.peer, false);
+    alex.text({ d: 3 }); // no such display here
+    expect(texts).toHaveLength(0);
+    profile.limit = 1;
+    vi.advanceTimersByTime(2000);
+    alex.text();
+    alex.text();
+    alex.alive();
+    expect(texts).toHaveLength(1); // only the first of three in one second
+  });
+
+  it('drops alive about someone who is not in the room, and a member that needs an update', () => {
+    alex.alive({ who: '9999999999999999' });
+    expect(texts).toHaveLength(0);
+    alex.alive({ who: alex.peer });
+    expect(texts).toHaveLength(1);
+    alex.presence({ proto: 2 });
+    alex.text();
+    expect(texts).toHaveLength(1);
+  });
+
+  it('drops a vote from a muted member but keeps their ballots', () => {
+    alex.vote();
+    alex.vote({ id: '0a1b2c3e', kind: 'kick', target: room.self });
+    expect(votes.map((v) => [v.id, v.kind, v.target, v.peer])).toEqual([
+      ['0a1b2c3d', 'ff', undefined, alex.peer],
+      ['0a1b2c3e', 'kick', room.self, alex.peer],
+    ]);
+    room.muteMember(alex.peer, true);
+    alex.vote({ id: '0a1b2c3f' });
+    expect(votes).toHaveLength(2);
+    alex.ballot();
+    expect(ballots).toMatchObject([{ id: '0a1b2c3d', yes: true, peer: alex.peer }]);
+    room.setStatusFlags({ paused: true, roomMuted: true });
+    vi.advanceTimersByTime(2100);
+    alex.ballot({ yes: false });
+    expect(ballots).toHaveLength(2);
+    alex.presence({ proto: 2 });
+    vi.advanceTimersByTime(2100);
+    alex.ballot();
+    expect(ballots).toHaveLength(2); // a member that needs an update is still ignored
+  });
+
+  it('accepts at most one ballot every 2 s per member, beyond the incoming limit', () => {
+    profile.limit = 1;
+    alex.ballot({ yes: true });
+    vi.advanceTimersByTime(1000);
+    alex.ballot({ yes: false });
+    vi.advanceTimersByTime(1100);
+    alex.ballot({ yes: false });
+    expect(ballots.map((b) => b.yes)).toEqual([true, false]);
+    profile.limit = 0;
+    vi.advanceTimersByTime(2100);
+    alex.ballot();
+    alex.ballot();
+    expect(ballots).toHaveLength(3); // unlimited pings do not lift the ballot limit
+  });
+
+  it('ignores a kicked peer for the rest of the session', () => {
+    toasts.length = 0;
+    room.kick(alex.peer);
+    expect(room.state().members.map((m) => m.peer)).toEqual([SELF]);
+    expect(toasts).toEqual([{ kind: 'kicked', name: 'Alex' }]);
+    alex.presence({ name: 'Alex' });
+    alex.text();
+    expect(room.state().members).toHaveLength(1);
+    expect(texts).toHaveLength(0);
+    room.kick('3333333333333333'); // not a member: nothing happens
+    expect(toasts).toHaveLength(1);
+  });
+
+  it('flags members on older apps and members with text or votes off', () => {
+    const old = new Remote('2222222222222222', 'lan:b', lan);
+    const quiet = new Remote('3333333333333333', 'lan:c', lan);
+    const odd = new Remote('4444444444444444', 'lan:d', lan);
+    old.presence({ app: '0.5.1' });
+    quiet.presence({ app: '0.5.2', nf: ['votes'] });
+    odd.presence({ app: 'room-peer', nf: ['text', 'votes'] });
+    const flags = (peer: string): (boolean | undefined)[] => {
+      const m = room.state().members.find((x) => x.peer === peer);
+      return [m?.noChat, m?.textOff, m?.votesOff];
+    };
+    expect(flags(SELF)).toEqual([false, false, false]);
+    expect(flags(alex.peer)).toEqual([false, false, false]);
+    expect(flags(old.peer)).toEqual([true, false, false]);
+    expect(flags(quiet.peer)).toEqual([false, false, true]);
+    expect(flags(odd.peer)).toEqual([false, true, true]);
+    quiet.presence({ app: '0.5.2' }); // switched votes back on
+    expect(flags(quiet.peer)).toEqual([false, false, false]);
+  });
+
+  it('announces the switched-off room features', () => {
+    const lastPresence = (): Record<string, unknown> | undefined => {
+      const sent = lan.sent.filter((s) => s.to === '*').map((s) => JSON.parse(open(KEYS.msgKey, s.packet)?.toString('utf8') ?? 'null'));
+      return sent.filter((m) => m?.t === 'presence').at(-1);
+    };
+    lan.sent = [];
+    profile.nf = ['text'];
+    room.profileChanged();
+    expect(lastPresence()?.nf).toEqual(['text']);
+    expect(room.state().members[0]).toMatchObject({ textOff: true, votesOff: false });
+    lan.sent = [];
+    profile.nf = [];
+    room.profileChanged();
+    expect(lastPresence()).toBeDefined();
+    expect(lastPresence()).not.toHaveProperty('nf');
+  });
+
+  it('keeps an 0.5 peer as a member when we send text', async () => {
+    const old = new Remote('2222222222222222', 'lan:b', lan);
+    old.presence({ app: '0.5.1' });
+    lan.sent = [];
+    room.sendText('hello', { d: 1, x: 0.1, y: 0.2 });
+    room.sendAlive(old.peer, { d: 1, x: 0.1, y: 0.2 });
+    room.sendVote({ id: '0a1b2c3d', kind: 'kick', target: old.peer });
+    room.sendBallot('0a1b2c3d', false);
+    expect(sentMessages('lan:b').map((m) => m.t)).toEqual(['text', 'alive', 'vote', 'ballot']);
+    expect(sentMessages('lan:b')[2]).toMatchObject({ kind: 'kick', target: old.peer });
+    await vi.advanceTimersByTimeAsync(2000);
+    old.presence({ app: '0.5.1' });
+    expect(room.state().members.map((m) => m.peer)).toContain(old.peer);
+  });
+
+  it('sends nothing while paused', () => {
+    room.setStatusFlags({ paused: true, roomMuted: false });
+    lan.sent = [];
+    room.sendText('hello', { d: 1, x: 0, y: 0 });
+    room.sendBallot('0a1b2c3d', true);
+    expect(lan.sent).toHaveLength(0);
+  });
+});
+
+describe('signed members', () => {
+  let sam: SignedRemote;
+  const members = (): string[] => room.state().members.map((m) => m.peer);
+
+  beforeEach(async () => {
+    await joinActive();
+    sam = new SignedRemote(7, 'lan:s', lan);
+    sam.presence({ name: 'Sam' });
+  });
+
+  it('signs what we send with the key our presence announces, but not chunks', () => {
+    room.sendToLan(sam.peer, { t: 'chunk', h: 'ab'.repeat(16), i: 0, n: 1, b: 'QQ==' });
+    const sent = lan.sent.map((x) => {
+      const plain = open(KEYS.msgKey, x.packet);
+      if (!plain) throw new Error('unsealed');
+      const d = decodeSigned(plain);
+      if (!d) throw new Error('undecodable');
+      return d;
+    });
+    const presence = sent.find((d) => d.msg.t === 'presence');
+    if (!presence || presence.msg.t !== 'presence' || !presence.msg.pk || !presence.sig) throw new Error('no signed presence');
+    const pk = Buffer.from(presence.msg.pk, 'base64');
+    expect(peerIdOf(pk)).toBe(SELF);
+    const key = publicKeyOf(pk);
+    if (!key) throw new Error('bad key');
+    expect(verifyBody(key, presence.body, presence.sig)).toBe(true);
+    expect(sent.find((d) => d.msg.t === 'chunk')?.sig).toBeNull();
+  });
+
+  it('keeps a signed member when someone forges their bye', () => {
+    lan.deliver('lan:evil', forged(sam.peer, { t: 'bye' }));
+    expect(members()).toContain(sam.peer);
+    sam.ping();
+    expect(pings).toHaveLength(1);
+  });
+
+  it("doesn't let a forged high sequence number block a signed member", () => {
+    lan.deliver('lan:evil', forged(sam.peer, { t: 'ping', ping: 'danger', d: 1, x: 0, y: 0 }, 2 ** 40));
+    expect(pings).toHaveLength(0);
+    sam.ping();
+    expect(pings).toHaveLength(1);
+  });
+
+  it('drops a message signed with someone else’s key', () => {
+    const mallory = makeIdentity(new Uint8Array(32).fill(9));
+    lan.deliver('lan:evil', sam.packet({ t: 'bye' }, KEYS.msgKey, mallory));
+    expect(members()).toContain(sam.peer);
+    lan.deliver('lan:evil', sam.packet({ t: 'ping', ping: 'danger', d: 1, x: 0, y: 0 }, KEYS.msgKey, mallory));
+    expect(pings).toHaveLength(0);
+  });
+
+  it('ignores a signed presence whose key does not match its peer id', () => {
+    const liar = new SignedRemote(8, 'lan:l', lan);
+    const other = makeIdentity(new Uint8Array(32).fill(10));
+    const body = encodeMessage({
+      peer: liar.peer, seq: 1, ts: Date.now(), t: 'presence', proto: 1, app: '0.5.2', name: 'Liar', color: 1, status: 'on',
+      em: [], nf: [], pk: other.pk.toString('base64'),
+    });
+    lan.deliver('lan:l', seal(KEYS.msgKey, new TextEncoder().encode(joinSigned(new TextDecoder().decode(body), signBody(other, body)))));
+    expect(members()).not.toContain(liar.peer);
+  });
+
+  it('drops signed messages until it has the sender’s presence', () => {
+    const kim = new SignedRemote(11, 'lan:k', lan);
+    kim.ping();
+    expect(pings).toHaveLength(0);
+    kim.presence({ name: 'Kim' });
+    kim.ping();
+    expect(pings).toHaveLength(1);
+  });
+
+  it('lets a signed presence win over an unsigned presence and bye sent first for the same id', () => {
+    const kim = new SignedRemote(11, 'lan:k', lan);
+    lan.deliver('lan:evil', forged(kim.peer, { t: 'presence', proto: 1, app: '0.5.1', name: 'Fake', color: 0, status: 'on' }));
+    lan.deliver('lan:evil', forged(kim.peer, { t: 'bye' }, 2));
+    kim.presence({ name: 'Kim' });
+    expect(room.state().members.find((m) => m.peer === kim.peer)?.name).toBe('Kim');
+    kim.ping();
+    expect(pings).toHaveLength(1);
+  });
+
+  it('takes over a member that an unsigned presence made', () => {
+    const kim = new SignedRemote(11, 'lan:k', lan);
+    lan.deliver('lan:evil', forged(kim.peer, { t: 'presence', proto: 1, app: '0.5.1', name: 'Fake', color: 0, status: 'on' }));
+    expect(room.state().members.find((m) => m.peer === kim.peer)?.name).toBe('Fake');
+    kim.presence({ name: 'Kim' });
+    lan.deliver('lan:evil', forged(kim.peer, { t: 'ping', ping: 'danger', d: 1, x: 0, y: 0 }, 3));
+    expect(room.state().members.find((m) => m.peer === kim.peer)?.name).toBe('Kim');
+    expect(pings).toHaveLength(0);
+  });
+
+  it('keeps a kicked signed member out', () => {
+    room.kick(sam.peer);
+    sam.presence({ name: 'Sam' });
+    sam.ping();
+    expect(members()).not.toContain(sam.peer);
+    expect(pings).toHaveLength(0);
+  });
+
+  it('passes a chunk claiming a signed member to the transfer without moving their route', () => {
+    const chunks: RoomMessage[] = [];
+    room.on('chunk', (c: RoomMessage) => chunks.push(c));
+    lan.deliver('lan:evil', forged(sam.peer, { t: 'chunk', h: 'cd'.repeat(16), i: 0, n: 1, b: 'QQ==' }));
+    expect(chunks).toHaveLength(1);
+    lan.sent.length = 0;
+    room.sendToLan(sam.peer, { t: 'want', to: sam.peer, h: 'cd'.repeat(16), need: [] });
+    expect(lan.sent.map((x) => x.to)).toEqual(['lan:s']);
+  });
+});

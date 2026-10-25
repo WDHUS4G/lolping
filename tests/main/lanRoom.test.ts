@@ -27,8 +27,9 @@ function peer(port: number, other: number, name: string) {
     randomBytes: (n) => randomBytes(n),
     deriveKeys: deriveRoomKeys,
     appVersion: '0.3.0',
-    profile: () => ({ name, color: 1, limit: 0 }),
+    profile: () => ({ name, color: 1, rgb: null, limit: 0, nf: [] }),
     resolveTarget: () => ({ displayId: 1, width: 1000, height: 500 }),
+    announceEmotes: () => [],
   });
   const pings: RemotePing[] = [];
   const toasts: RoomToast[] = [];
@@ -57,7 +58,7 @@ describe('two rooms over loopback UDP', () => {
 
     a.room.sendPing('push', { d: 1, x: 0.5, y: 0.5 });
     await until(() => b.pings.length === 1);
-    expect(b.pings[0]).toEqual({ displayId: 1, x: 500, y: 250, id: 'push', tag: { name: 'Alice', color: 1 } });
+    expect(b.pings[0]).toEqual({ displayId: 1, x: 500, y: 250, id: 'push', tag: { name: 'Alice', color: 1, rgb: null } });
 
     b.lan.rebind();
     await until(() => b.lan.status === 'ok');

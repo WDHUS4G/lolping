@@ -1,9 +1,9 @@
 {
   "name": "lolping",
   "productName": "lolPing",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "private": true,
-  "description": "League of Legends style ping wheel for your Windows and macOS desktop",
+  "description": "League of Legends style ping wheel for your Windows, macOS and Linux desktop",
   "author": "Danrui Meng (https://github.com/darrenprx)",
   "license": "MIT",
   "homepage": "https://github.com/darrenprx/lolPing#readme",
@@ -22,7 +22,9 @@
     "dist:mac": "npm run build:helper && electron-vite build && electron-builder --mac --arm64 --publish never",
     "dev:site": "vite --config site/vite.config.ts",
     "build:site": "vite build --config site/vite.config.ts",
-    "media": "npm run build:site && electron tools/capture-media/capture.mjs"
+    "media": "npm run build:site && electron tools/capture-media/capture.mjs",
+    "dist:linux": "npm run build:helper && electron-vite build && electron-builder --linux --publish never",
+    "test:linux-input": "python3 native/hook-helper/tests/linux_x11_test.py"
   },
   "devDependencies": {
     "@fluentui/react-components": "9.74.9",
@@ -63,6 +65,7 @@
       "include": "build/installer.nsh"
     },
     "mac": {
+      "minimumSystemVersion": "13.0",
       "target": [{ "target": "dmg", "arch": ["arm64"] }],
       "icon": "build/icon.png",
       "category": "public.app-category.utilities",
@@ -79,6 +82,33 @@
       }
     },
     "dmg": { "artifactName": "lolPing-${version}-arm64.dmg" },
-    "publish": [{ "provider": "github", "owner": "darrenprx", "repo": "lolPing" }]
-  }
+    "publish": [{ "provider": "github", "owner": "darrenprx", "repo": "lolPing" }],
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }, { "target": "deb", "arch": ["x64"] }],
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "artifactName": "lolPing-${version}-${arch}.${ext}",
+      "extraResources": [{ "from": "native/hook-helper/build/hook-helper", "to": "hook-helper" }],
+      "desktop": { "entry": { "StartupWMClass": "lolping" } },
+      "maintainer": "lolPing contributors",
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "libxi6",
+        "libx11-6",
+        "libasound2",
+        "libgbm1",
+        "libnotify4",
+        "libsecret-1-0",
+        "libatspi2.0-0"
+      ]
+    }
+  },
+  "engines": { "node": ">=22.12.0" },
+  "desktopName": "lolping.desktop"
 }

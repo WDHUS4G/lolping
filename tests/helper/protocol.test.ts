@@ -7,10 +7,10 @@ import { describe, expect, it } from 'vitest';
 import { parseHelperLine, type HelperEvent } from '../../src/shared/protocol';
 
 const exe = resolve(__dirname, '../../native/hook-helper/build', process.platform === 'win32' ? 'hook-helper.exe' : 'hook-helper');
-const ALT = 164, CTRL = 162, KEY_P = 80;
+const ALT = 164, CTRL = 162, KEY_P = 80, KEY_T = 84;
 const config = {
   type: 'config', trigger: 'alt', triggerVk: 0, clickPing: false, emoteTrigger: 'ctrl', emoteTriggerVk: 0, emoteClick: false,
-  dragThresholdPx: 8, toggleMods: 3, toggleVk: 80, enabled: true,
+  dragThresholdPx: 8, toggleMods: 3, toggleVk: 80, textMods: 3, textVk: 84, enabled: true,
 };
 
 async function simulate(lines: object[]): Promise<HelperEvent[]> {
@@ -33,7 +33,7 @@ const sim = (ev: string, extra: Record<string, unknown> = {}) => ({ type: 'sim',
 describe('hook-helper --simulate', () => {
   it('announces itself first', async () => {
     const events = await simulate([]);
-    expect(events[0]).toEqual({ type: 'ready', version: 2 });
+    expect(events[0]).toEqual({ type: 'ready', version: 4 });
   });
 
   it('opens and releases the wheel on Alt+drag', async () => {
@@ -99,6 +99,31 @@ describe('hook-helper --simulate', () => {
       config, sim('kdown', { vk: CTRL }), sim('kdown', { vk: ALT }), sim('kdown', { vk: KEY_P }),
     ]);
     expect(events).toContainEqual({ type: 'toggled', enabled: false });
+  });
+
+  it('reports the text shortcut and swallows its key', async () => {
+    const events = await simulate([
+      config, sim('kdown', { vk: CTRL }), sim('kdown', { vk: ALT }), sim('kdown', { vk: KEY_T }), sim('kup', { vk: KEY_T }),
+    ]);
+    expect(events).toContainEqual({ type: 'textRequested' });
+    const keyLines = events.filter((e) => e.type === 'sim').slice(-2);
+    expect(keyLines.every((e) => e.type === 'sim' && e.swallow)).toBe(true);
+  });
+
+  it('shows the panel on Tab down, hides it on Tab up, and swallows both', async () => {
+    const events = await simulate([
+      { ...config, panelVk: 9 }, sim('kdown', { vk: 9 }), sim('kup', { vk: 9 }),
+    ]);
+    const protocol = events.filter((e) => e.type !== 'ready');
+    expect(protocol).toEqual([
+      { type: 'panel', show: true }, { type: 'sim', swallow: true, inject: '' },
+      { type: 'panel', show: false }, { type: 'sim', swallow: true, inject: '' },
+    ]);
+  });
+
+  it('leaves Tab alone while the panel key is off', async () => {
+    const events = await simulate([{ ...config, panelVk: 0 }, sim('kdown', { vk: 9 })]);
+    expect(events.filter((e) => e.type !== 'ready')).toEqual([{ type: 'sim', swallow: false, inject: '' }]);
   });
 
   it('reports invalid commands as errors', async () => {

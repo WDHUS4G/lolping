@@ -2,7 +2,8 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  ALL_PINGS, DEFAULT_WHEEL, DEFAULT_WHEEL_PINGS, allSoundNames, allTextureNames, pingById, soundUrl, textureUrl,
+  ALL_PINGS, DEFAULT_WHEEL, DEFAULT_WHEEL_PINGS, FALLBACK_TEXTURE, LOGO_TEXTURE, allSoundNames, allTextureNames, pingById,
+  soundUrl, textureUrl,
 } from '../../src/shared/pings';
 
 const assets = resolve(__dirname, '../../assets');
@@ -13,8 +14,18 @@ describe('ping table', () => {
     expect(DEFAULT_WHEEL_PINGS.map((p) => p.id)).toEqual(DEFAULT_WHEEL);
   });
 
-  it('offers the generic, Bait and Vision Cleared pings beyond the default wheel', () => {
-    expect(ALL_PINGS.map((p) => p.id)).toEqual([...DEFAULT_WHEEL, 'generic', 'bait', 'visioncleared']);
+  it('offers the generic, Bait, Vision Cleared and upside-down Missing pings beyond the default wheel', () => {
+    expect(ALL_PINGS.map((p) => p.id)).toEqual([...DEFAULT_WHEEL, 'generic', 'bait', 'visioncleared', 'missingflip']);
+  });
+
+  it('draws the upside-down Missing ping with the rotated texture and the Enemy Missing sound', () => {
+    expect(pingById('missingflip')).toMatchObject({
+      icon: 'enemy_missing_flipped', art: ['enemy_missing_flipped'], sound: pingById('missing')?.sound,
+    });
+  });
+
+  it('draws On My Way with the upright arrow recoloured to cyan, not the flat ground render', () => {
+    expect(pingById('omw')).toMatchObject({ icon: 'omw_cyan', art: ['omw_cyan'] });
   });
 
   it('uses the in-game sounds for Bait and Vision Cleared', () => {
@@ -42,8 +53,19 @@ describe('ping table', () => {
     }
   });
 
-  it('never uses colourblind textures', () => {
-    for (const name of allTextureNames()) expect(name).not.toMatch(/_cb/);
+  it('keeps the logo among the textures the build ships, though no ping draws it', () => {
+    expect(allTextureNames()).toContain(LOGO_TEXTURE);
+  });
+
+  it('never draws a ping with a colourblind texture', () => {
+    // League's PingUpdate/Need/ icons at 128 px are the colourblind set: lime instead of teal, lemon instead of gold,
+    // blue instead of cyan, pink instead of red.
+    const colourblind = ['all_in', 'assist_me', 'caution', 'enemy_missing', 'enemy_vision', 'generic_ping', 'hold_ig',
+      'need_vision', 'omw', 'push', 'target', 'vision_cleared'];
+    for (const name of [...ALL_PINGS.flatMap((p) => [p.icon, ...p.art]), FALLBACK_TEXTURE]) {
+      expect(name).not.toMatch(/_cb/);
+      expect(colourblind, name).not.toContain(name);
+    }
   });
 
   it('gives All In two clashing halves and every other ping one art image', () => {

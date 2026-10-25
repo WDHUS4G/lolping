@@ -5,6 +5,15 @@ export interface Rect {
   height: number;
 }
 
+/** The top-left corner for a box of `size` that wants to sit at `at` but has to stay inside `area`. */
+export function placeInside(at: { x: number; y: number }, size: { width: number; height: number }, area: Rect): { x: number; y: number } {
+  const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(v, max));
+  return {
+    x: clamp(at.x, area.x, area.x + area.width - size.width),
+    y: clamp(at.y, area.y, area.y + area.height - size.height),
+  };
+}
+
 /** One monitor: its rect in DIPs (Electron) and in physical pixels (the hook helper). */
 export interface DisplayMap {
   id: number;

@@ -73,6 +73,7 @@ export class AppTray {
   private enabled = true;
   private room: TrayRoom = { code: null, count: 0, muted: false };
   private update: TrayUpdate = null;
+  private roomsShown = true;
   private destroyed = false;
 
   /** `mac` switches to menu bar behaviour: template icons, and a click opens the menu (which has Settings…). */
@@ -125,6 +126,13 @@ export class AppTray {
     this.render();
   }
 
+  /** Shows or hides the Room submenu: hidden while the Rooms feature is off. */
+  setRoomsShown(on: boolean): void {
+    if (this.destroyed || on === this.roomsShown) return;
+    this.roomsShown = on;
+    this.render();
+  }
+
   setUpdate(update: TrayUpdate): void {
     if (this.destroyed) return;
     const u = this.update;
@@ -161,9 +169,9 @@ export class AppTray {
       click: (item) => this.handlers.setEnabled(item.checked),
     });
     if (failed) items.push({ label: t.trayRestart, click: () => this.handlers.retryHelper() });
+    items.push({ type: 'separator' });
+    if (this.roomsShown) items.push({ label: t.trayRoom, submenu: this.roomMenu() });
     items.push(
-      { type: 'separator' },
-      { label: t.trayRoom, submenu: this.roomMenu() },
       { label: t.traySettings, click: () => this.handlers.openSettings() },
       { label: t.trayQuit, click: () => this.handlers.quit() },
     );

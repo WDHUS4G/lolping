@@ -33,11 +33,13 @@ export interface WheelItem {
 export class Wheel {
   private readonly wedges: SVGPathElement[] = [];
   private readonly icons: SVGImageElement[] = [];
+  private hub: SVGImageElement | null = null;
   private items: readonly WheelItem[] = [];
   private hot = -1;
   private ox = 0;
   private oy = 0;
   private opened = false;
+  private scale = 1;
 
   constructor(
     private readonly svg: SVGSVGElement,
@@ -58,6 +60,20 @@ export class Wheel {
     });
   }
 
+  /** Changes the icon in the middle of the wheel. */
+  setCenterIcon(url: string): void {
+    this.hub?.setAttribute('href', url);
+  }
+
+  /** Scales the SVG and its dead zone together, keeping the press point at the centre. */
+  setSize(sizePx: number): void {
+    this.scale = sizePx / WHEEL.size;
+    this.svg.style.width = `${sizePx}px`;
+    this.svg.style.height = `${sizePx}px`;
+    this.svg.style.marginLeft = `${-sizePx / 2}px`;
+    this.svg.style.marginTop = `${-sizePx / 2}px`;
+  }
+
   get isOpen(): boolean {
     return this.opened;
   }
@@ -73,13 +89,13 @@ export class Wheel {
   }
 
   move(x: number, y: number): void {
-    if (this.opened) this.setHot(pickSlice(x - this.ox, y - this.oy));
+    if (this.opened) this.setHot(pickSlice(x - this.ox, y - this.oy, WHEEL.innerR * this.scale));
   }
 
   /** Closes the wheel. Returns the chosen item's key at the wheel centre, or null when released in the dead zone. */
   release(x: number, y: number): { key: string; x: number; y: number } | null {
     if (!this.opened) return null;
-    const slice = pickSlice(x - this.ox, y - this.oy);
+    const slice = pickSlice(x - this.ox, y - this.oy, WHEEL.innerR * this.scale);
     this.close();
     const item = slice >= 0 ? this.items[slice] : undefined;
     return item ? { key: item.key, x: this.ox, y: this.oy } : null;
@@ -146,7 +162,7 @@ export class Wheel {
     el('circle', { r: innerR + 4, fill: 'none', stroke: '#1a1a1a', 'stroke-width': 6, opacity: 0.6 }, svg);
     el('circle', { r: innerR, fill: `url(#${id}-core)`, stroke: '#c8aa6e', 'stroke-width': 3 }, svg);
     el('circle', { r: innerR - 7, fill: 'none', stroke: '#8a7448', 'stroke-width': 1, opacity: 0.6 }, svg);
-    el('image', { href: this.centerIcon, x: -20, y: -58, width: 40, height: 40, class: 'hub' }, svg);
+    this.hub = el('image', { href: this.centerIcon, x: -20, y: -58, width: 40, height: 40, class: 'hub' }, svg);
     el('text', { x: 0, y: 6, 'text-anchor': 'middle', class: 'centerTxt' }, svg).textContent = this.centerLabel;
     el('text', { x: 6, y: 50, 'text-anchor': 'middle', class: 'backTxt' }, svg).textContent = 'BACK';
     const mouse = el('g', { opacity: 0.55, transform: 'translate(-26,40)' }, svg);

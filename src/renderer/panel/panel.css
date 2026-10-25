@@ -1,0 +1,153 @@
+@import '../league.css';
+
+:root { color-scheme: dark; font-family: var(--sans); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; user-select: none; }
+main { position: relative; height: 100%; color: var(--gold-1); }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:disabled { cursor: default; }
+h1, p { margin: 0; }
+
+/* ---------- surrender and kick: League's in-game surrender widget, 223 x 113 ---------- */
+.surrender { position: relative; width: 223px; height: 113px; background: url("/ui/surrender-frame.png") no-repeat; }
+.surrender .title {
+  position: absolute; left: 10px; right: 10px; top: 8px; overflow: hidden; text-align: center; white-space: nowrap;
+  text-overflow: ellipsis; font: 700 17px/22px var(--serif); color: #8fdcc0; text-shadow: 0 1px 2px #000;
+}
+/* The frame has two black slots: one for the votes, a thinner one for the time. */
+.segments { position: absolute; left: 13px; top: 44px; width: 197px; height: 12px; display: flex; gap: 2px; }
+.segments span { flex: 1; min-width: 0; background: linear-gradient(#45484b, #2d2f31); }
+.segments .yes { background: linear-gradient(#1fb63e, #0b7c22); }
+.segments .no { background: linear-gradient(#a32424, #6a1010); }
+.surrender .track { position: absolute; left: 13px; top: 62px; width: 196px; height: 5px; }
+.surrender .bar { height: 100%; background: url("/ui/surrender-timer.png") left center / 196px 5px no-repeat; transform-origin: left center; }
+.foot { position: absolute; left: 0; right: 0; top: 74px; height: 32px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.foot .said { font: 14px/1 var(--serif); color: #c4b089; }
+.foot button {
+  width: 60px; height: 24px; padding: 0; border: 0; background: url("/ui/surrender-button.png") 0 0 / 100% 100%;
+  font: 700 16px/24px var(--sans);
+}
+.foot button:not(:disabled):hover { background-image: url("/ui/surrender-button-hover.png"); }
+.foot button:not(:disabled):active { background-image: url("/ui/surrender-button-down.png"); }
+.foot .yes { color: #2bd34d; }
+.foot .no { color: #e2453c; }
+.foot button:disabled { opacity: .45; }
+
+/* ---------- ready check: the client's, with its sizes from rcp-fe-lol-navigation.css ---------- */
+/* Drawn at the client's own scale and zoomed to the window. The 530 px body sits 11 px in, because the timer video is
+   552 x 554 and spills past the frame. */
+.vote.ready { position: relative; width: 552px; height: 565px; zoom: .8; }
+.body {
+  position: absolute; left: 11px; top: 12px; width: 530px; height: 530px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--gold-1);
+}
+.scene {
+  position: absolute; left: 60px; top: 60px; width: 410px; height: 410px; background: url("/ui/ready-background.png") center / cover;
+  -webkit-mask: url("/ui/ready-mask.png") center / contain no-repeat;
+}
+.scene.declined { filter: grayscale(100%); }
+.frame { position: absolute; inset: 0; background: url("/ui/ready-frame.png") no-repeat; }
+.timer { position: absolute; left: 0; right: 0; top: 2px; bottom: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.timer video { flex: none; width: 552px; height: 554px; }
+.timer video[hidden] { display: none; }
+.map { position: relative; width: 92px; height: 92px; background: url("/ui/ready-icon.png") center / contain no-repeat; }
+.status { position: relative; width: 300px; height: 80px; text-align: center; }
+.status .title {
+  margin: 10px auto 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font: 700 30px/32px var(--serif); letter-spacing: .05em; text-transform: uppercase; color: var(--gold-1);
+}
+.details { margin-top: 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 12px/16px var(--sans); letter-spacing: .1em; color: var(--grey-1); }
+.pips { display: flex; justify-content: center; gap: 8px; margin-top: 8px; }
+.pips span { width: 9px; height: 9px; border: 1px solid var(--gold-4); background: var(--hextech); transform: rotate(45deg); }
+.pips .yes { border-color: var(--teal); background: var(--teal); box-shadow: 0 0 6px var(--teal); }
+.pips .no { border-color: var(--red); background: var(--red); }
+.buttons { position: absolute; bottom: -11px; left: calc(50% - 150px); width: 300px; display: flex; flex-direction: column; align-items: center; }
+.accept {
+  width: 212px; height: 70px; padding: 0 0 8px; border: 0; background: url("/ui/ready-accept.png") 50% / contain no-repeat;
+  font: 700 18px/22px var(--serif); letter-spacing: .05em; text-transform: uppercase; color: #a3c7c7;
+}
+.accept:not(:disabled):hover { background-image: url("/ui/ready-accept-hover.png"); color: #cdfafa; }
+.accept:disabled { background-image: url("/ui/ready-accept-disabled.png"); color: #5c5b57; }
+/* The client's flat button: a gold edge on dark grey. */
+.decline {
+  width: 120px; height: 32px; margin-top: 8px; padding: 0; border: 2px solid transparent;
+  border-image: linear-gradient(var(--gold-3), var(--gold-4)) 1; background: #1e2328;
+  font: 700 12px/1 var(--sans); letter-spacing: .075em; text-transform: uppercase; color: var(--gold-2); transition: opacity .1s;
+}
+.decline:not(:disabled):hover { border-image: linear-gradient(var(--gold-1), var(--gold-3)) 1; color: var(--gold-1); background: linear-gradient(#1e2328, #433d2b); }
+.decline:disabled { border-image: none; border-color: var(--grey-3); color: var(--grey-2); }
+.decline.chosen { color: var(--red); }
+
+/* ---------- the room panel: League's Tab scoreboard ---------- */
+/* The cap's art is 107 x 58: its notched corners stay, its middle stretches to hold the tabs. */
+.cap {
+  position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+  width: 330px; height: 40px; margin: 0 auto -6px; padding: 0 6px;
+  border: 12px solid transparent; border-image: url("/ui/scoreboard-cap.png") 24 30 fill / 12px 15px stretch;
+}
+.tab {
+  width: 112px; padding: 0; border: 0; background: transparent;
+  font: 600 12px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--grey-1);
+}
+.tab:hover { color: var(--gold-1); }
+.tab.current { color: var(--gold-3); text-shadow: 0 0 8px rgba(200, 170, 110, .5); }
+.gem { font: 700 13px/1 var(--serif); color: var(--gold-1); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gem .count { display: block; }
+
+/* The frame's art is 1124 x 452: drawn at 0.64, so its header band, notch and centre line keep their shape. */
+.board {
+  display: flex; flex-direction: column; height: calc(100% - 34px);
+  border: solid transparent; border-width: 51px 15px 15px; border-image: url("/ui/scoreboard-frame.png") 80 24 24 fill / 51px 15px 15px stretch;
+}
+.board-head {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px;
+  height: 51px; margin: -51px 0 0; padding: 0 16px 6px;
+}
+.board-head .code { grid-column: 2; font: 700 17px/1 var(--serif); letter-spacing: .06em; color: var(--gold-2); }
+.board-head .ff { grid-column: 1; justify-self: start; }
+.board-head .ready { grid-column: 3; justify-self: end; }
+
+.list { flex: 1; min-height: 0; overflow-y: auto; }
+.list.members { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: repeat(var(--rows), 46px); grid-auto-flow: column; }
+/* History is one column: cover the frame's centre line. */
+.list.history { padding: 10px 16px; background: #080e12; }
+.empty { padding: 24px 0; text-align: center; font-size: 13px; color: var(--grey-2); }
+
+.member { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid rgba(70, 55, 20, .5); }
+.member:not(.open):hover { background: rgba(240, 230, 210, .04); }
+.member.me { background: url("/ui/scoreboard-self.png") 0 0 / 100% 100% no-repeat; }
+.portrait {
+  position: relative; flex: none; display: grid; place-items: center; width: 38px; height: 38px;
+  background: url("/ui/scoreboard-ring.png") center / 100% 100% no-repeat, radial-gradient(circle, #1c3640 0 55%, transparent 60%);
+  font: 700 16px/1 var(--serif); color: var(--tag);
+}
+.open .portrait { opacity: .3; }
+.badge {
+  position: absolute; right: -4px; bottom: -3px; display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%;
+  border: 1px solid var(--gold-4); background: var(--hextech); font: 700 8px/1 var(--sans); color: var(--teal); cursor: default;
+}
+.badge.paused, .badge.muted { color: var(--gold-3); }
+.badge.update, .badge.noChat { color: var(--red); }
+.badge.textOff, .badge.votesOff { color: var(--grey-1); text-decoration: line-through; }
+.who { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.tag {
+  max-width: 100%; padding: 0; border: 0; background: transparent; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 600 14px/18px var(--sans); color: var(--tag); text-shadow: 0 1px 2px #000;
+}
+button.tag:hover { text-decoration: underline; }
+.member.muted .tag, .member.muted .portrait { opacity: .5; }
+.path { font-size: 11px; line-height: 13px; color: var(--grey-1); white-space: nowrap; }
+.icons { flex: none; display: flex; gap: 3px; }
+.icon {
+  display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid var(--grey-3);
+  background: linear-gradient(#2a2e33, #15181b); font-size: 10px; color: var(--grey-1);
+}
+.icon:hover { border-color: var(--gold-4); color: var(--gold-1); }
+.icon svg { width: 13px; height: 13px; fill: currentColor; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+.icon.speaker.on { color: var(--red); }
+.icon.kick:hover { color: var(--red); }
+
+.line { padding: 3px 0; font-size: 13px; line-height: 1.4; color: var(--gold-1); overflow-wrap: anywhere; user-select: text; }
+.line .who { display: inline; margin-right: 6px; font-weight: 600; color: var(--tag); }
+.line .who::after { content: ":"; }
+.line.vote .said { color: var(--gold-3); }
